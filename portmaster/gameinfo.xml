@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<gameList>
+  <game>
+    <path>./SPgram.sh</path>
+    <name>SPgram</name>
+    <desc>Unofficial client using the Telegram API. This preview tests sign-in and session restart.</desc>
+    <developer>Noksjava</developer>
+    <publisher>Noksjava</publisher>
+    <genre>Utility</genre>
+  </game>
+</gameList>

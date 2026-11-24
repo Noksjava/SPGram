@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "repository": "OWNER/REPOSITORY",
+  "channel": "preview",
+  "version": "0.2.57",
+  "target": {
+    "os": "KNULLI",
+    "arch": "aarch64",
+    "runtime": "love_11.5",
+    "min_firmware": "Gladiator II"
+  },
+  "minimum_updater": 3,
+  "asset": {
+    "name": "SPgram-PortMaster-v0.2.57.zip",
+    "url": "",
+    "sha256": "",
+    "size": 0
+  },
+  "update_asset": {
+    "name": "SPgram-Update-v0.2.57.zip",
+    "url": "",
+    "sha256": "",
+    "size": 0
+  },
+  "notes": "Local build manifest template; publishing fills URL, size and hash."
+}

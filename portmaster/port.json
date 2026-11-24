@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "name": "SPgram-PortMaster-v0.2.57.zip",
+  "items": ["SPgram.sh", "telegramsp"],
+  "items_opt": null,
+  "attr": {
+    "title": "SPgram",
+    "desc": "Unofficial client using the Telegram API. This preview tests sign-in and session restart.",
+    "inst": "Place your Telegram API credentials in telegramsp/conf/telegram.conf.",
+    "genres": ["utility"],
+    "porter": ["Noksjava"],
+    "image": {},
+    "rtr": false,
+    "runtime": null,
+    "reqs": [],
+    "arch": ["aarch64"]
+  }
+}

@@ -1,0 +1,37 @@
+# Build artifacts
+dist/
+*.zip
+build/
+build-host/
+
+# Local editor / file manager metadata
+.directory
+.DS_Store
+
+# Private configs and session data (never commit)
+telegram.conf
+app-credentials.ini
+subscription.conf
+subscription-sources.txt
+mtproto.conf
+manual-sing-box.json
+proxy.conf
+accounts.json
+data/
+conf/
+private/
+*.log
+.obsidian/
+
+# Runtime log
+log.txt
+
+# Private VPN/proxy configs (never commit)
+config/
+
+# Local planning notes
+plans/
+docs/JOB_SPEC.md
+
+# Rust tool build artifacts
+tools/screen-editor/target/
