@@ -3,11 +3,7 @@ SPgram is an unofficial Telegram client for the RG35XX series with PortMaster su
 
 Based on archeryfox’s [TGmuOS-LOVE](https://github.com/archeryfox/TGmuOS-LOVE)
 
-# SPgram
-
-SPgram is an unofficial Telegram client for the Anbernic RG35XX SP running KNULLI. It uses the Telegram API and connects to your existing Telegram account. Its retro interface is designed for the handheld's 640×480 screen and built-in controls, including an on-screen keyboard for typing and signing in.
-
-First alpha · v0.2.57 · Target device: RG35XX SP
+First alpha · Nov 2026 v0.2.57 · Target device: RG35XX SP
 
 - Browse direct messages, groups, channels, Saved Messages, and Archived Chats. Search conversations and return to your reading position.
 - Open long posts in a scrollable reader. See text and attached media together, inspect photos and GIFs, and follow supported quotes back to their original messages.
