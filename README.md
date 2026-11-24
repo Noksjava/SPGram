@@ -13,7 +13,7 @@ First alpha · Nov 2026 v0.2.57 · Target device: RG35XX SP
 
 ## Install
 
-You need an RG35XX SP wit PortMaster installed on your active storage and Wi-Fi for Telegram sign in and use. This alpha targets 35xxSP and Knulli Gladiator II 2025. Compatibility on other PortMaster devices and firmware is unverified.
+You need an RG35XX SP with PortMaster installed on your active storage and Wi-Fi for Telegram sign in and use. This alpha targets 35xxSP and Knulli Gladiator II 2025. Compatibility on other PortMaster devices and firmware is unverified.
 
 1. Download **`SPgram-PortMaster-v0.2.57.zip`** and its matching **`.zip.sha256`** file from the release assets. Keep the installer zipped. [SPgram releases](https://github.com/Noksjava/SPGram/releases)
 2. Verify the download on your computer using one of the commands below.
