@@ -1,6 +1,6 @@
 # SPgram
 
-SPgram is an unofficial Telegram client for the G35XX series with PortMaster It uses the Telegram API and connects to your existing Telegram account. Its retro interface is designed for the handheld's 640×480 screen and built-in controls, including an on-screen keyboard for typing and signing in.
+SPgram is an unofficial Telegram client for the G35XX series with PortMaster. It uses the Telegram API and connects to your existing Telegram account. Its retro interface is designed for the handheld's 640×480 screen and built-in controls, including an on-screen keyboard for typing and signing in.
 
 **Alpha · v0.2.67 · RG35XX SP with KNULLI Gladiator II**
 
