@@ -23,13 +23,6 @@
 - PortMaster listing details were expanded, cover artwork was added, and the genre was set to Other.
 - Background update checks on launch were added, with a switch in Settings and separate confirmation for installation.
 - The release repository was pinned by the installer, and verified updates were made available without editing a configuration file.
-## 0.2.59
-
-- PortMaster listing details were expanded, cover artwork was added, and the genre was set to Other.
-
-## 0.2.58
-
-- Background update checks on launch were added, with a switch in Settings and separate confirmation for installation.
 
 ## 0.2.57
 
