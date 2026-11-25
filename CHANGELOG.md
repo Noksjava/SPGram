@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.2.58 - 0.2.66
+
+- Read indicators were added to sent messages, and reader names and times were added where Telegram provides read receipts.
+- Fullscreen GIFs were moved to streaming playback at source cadence.
+- Channel handles and links to posts were added. Channel and user pictures can be viewed full-size, and messaging and blocking were added to user profiles.
+- Photo, sticker, and GIF cards were stabilized during loading and cache eviction.
+- Video seeking and quick reopen were hardened, and temporary media from interrupted playback is cleared at launch.
+- Fullscreen playback was prioritized over background work, chat-list updates were batched, and GIFs were given smoother playback within a fixed texture budget.
+- Settings rows were standardized and given matching icons, with account details and switching under My profile.
+- GIF cards were kept at a fixed size during loading and playback, and download progress was moved inside the preview.
+- The sign-in header was simplified.
+- Posts containing a single photo or video now open directly when there is no accompanying text or quote.
+- Sender names and selectable links were added to the message reader.
+- Account management was moved under My profile, and Wi-Fi radio controls were combined into one toggle.
+- PortMaster artwork packaging and the listing description were updated.
+- Missing avatars are now retried after stale cache entries and interrupted downloads.
+- Update checks were moved to the main Settings menu and made available on builds that use the full installer for updates.
+- An unread-message divider was added to chat history.
+- Sponsored Telegram links were routed to their destinations in the app.
+- The installed version was added to Settings.
+- PortMaster listing details were expanded, cover artwork was added, and the genre was set to Other.
+- Background update checks on launch were added, with a switch in Settings and separate confirmation for installation.
+- The release repository was pinned by the installer, and verified updates were made available without editing a configuration file.
+## 0.2.59
+
+- PortMaster listing details were expanded, cover artwork was added, and the genre was set to Other.
+
+## 0.2.58
+
+- Background update checks on launch were added, with a switch in Settings and separate confirmation for installation.
+
 ## 0.2.57
 
 - Signed manifests were made mandatory for app-only updates.
