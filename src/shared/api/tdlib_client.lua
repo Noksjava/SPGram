@@ -445,12 +445,15 @@ function telegram:record_message_ping(chat_id, message_id, now)
         end
     end
     if count >= 32 and not pings[chat_id] and oldest_id then pings[oldest_id] = nil end
-    pings[chat_id] = {id = message_id, created = now}
+    local motion_started = previous and now - previous.created < 0.35 and (previous.motion_started or previous.created) or now
+    pings[chat_id] = {id = message_id, created = now, motion_started = motion_started}
     return true
 end
 
 function telegram:push_notification(notice)
     self.notifications = self.notifications or {}
+    local ping = self.live_message_pings and self.live_message_pings[notice.chat_id]
+    notice.motion_started = ping and ping.motion_started or notice.created
     for index = #self.notifications, 1, -1 do
         if self.notifications[index].chat_id == notice.chat_id then
             table.remove(self.notifications, index)
@@ -773,6 +776,8 @@ function telegram:handle(object)
             if self.auth_state == "authorizationStateWaitPhoneNumber" and not self.options.manual_auth then
                 self:request_qr()
             end
+        elseif extra:match("^delete:") then
+            self.action_error, self.action_status = "", "Message deleted"
         elseif object["@extra"] == "loadChats" then
             self.chats_loaded = true
         elseif object["@extra"] == "loadArchiveChats" then
@@ -1023,7 +1028,7 @@ function telegram:handle(object)
                 self.dialog_search_results[chat_id] = {}
                 self.dialog_search_error = message
             end
-        elseif extra:match("^edit:") then
+        elseif extra:match("^delete:") or extra:match("^edit:") then
             self.action_error = message
             self.action_status = ""
         elseif extra == "log_out" then

@@ -39,6 +39,7 @@ local message = {id = 100, chat_id = 42, content = {["@type"] = "messageText", t
 local tg = setmetatable({
     current_chat_id = 42, chats = {chat}, chats_by_id = {[42] = chat}, archive_chats_by_id = {}, dialog_search_results = {},
     search_chats = noop, search_public_chats = noop, search_chat_messages = noop,
+    send = function(_, _, token) return token end,
     users = {},
 }, {__index = client})
 local screen = messenger.new({normal = font, small = font, subtitle = font, tiny = font}, tg)
@@ -1354,7 +1355,8 @@ print("Reader sender labels, link selection, and account submenu passed")
 do
     local gif = {id = 1004, chat_id = 42, is_channel_post = true,
         interaction_info = {reply_info = {reply_count = 2}},
-        content = {["@type"] = "messageAnimation", animation = {width = 720, height = 980, animation = {id = 3346}}}}
+        content = {["@type"] = "messageAnimation", animation = {width = 720, height = 980, animation = {id = 3346}},
+            caption = {text = "Attached GIF text"}}}
     chat.type = {["@type"] = "chatTypeSupergroup", is_channel = true}
     tg.messages[42], tg.current_chat_id = {gif}, 42
     tg.animation_by_message[tg:media_message_key(gif)] = 3346
@@ -1364,10 +1366,12 @@ do
     tg.animation_image = function() return entry.image end
     screen.model.scroll, screen.smooth_scroll = 0, 0
     local function bounds()
+        drawn["Attached GIF text"] = nil
         screen:draw_conversation(chat, 204, 436, 480)
         local position, hit, comments = screen.nav_pos[gif.id], screen.media_hits[1], screen.comment_hits[1]
         assert(position and hit and comments)
-        return {position.y, position.h, hit.media_x, hit.media_y, hit.media_w, hit.media_h, comments.y}
+        if gif.content["@type"] == "messageAnimation" then assert(drawn["Attached GIF text"]) end
+        return {position.y, position.h, hit.media_x, hit.media_y, hit.media_w, hit.media_h, comments.y, hit.bubble_w}
     end
     local resting = bounds()
     drawn["0 KB loaded"] = nil
@@ -1383,6 +1387,16 @@ do
     for index, value in ipairs(resting) do
         assert(pending[index] == value and with_thumbnail[index] == value and ready[index] == value)
     end
+    screen.message_cursor_id = gif.id
+    screen:activate_focused_message()
+    assert(screen.text_preview and screen.text_preview.photo.kind == "animation" and not screen.fullscreen_media)
+    assert(screen.text_preview.message_text == "Attached GIF text")
+    screen:draw_text_preview(640, 480)
+    assert(screen.text_preview.photo_hit)
+    screen:keypressed("return")
+    assert(screen.fullscreen_media and screen.fullscreen_media.kind == "animation")
+    screen:close_media_viewer()
+    screen.text_preview = nil
 
     local pixel
     tg.photo_image = function() return pixel, 48, 128 end
@@ -1403,7 +1417,7 @@ do
         for index, value in ipairs(empty) do assert(loaded[index] == value) end
     end
 end
-print("Photo, sticker and GIF layout stays fixed as textures and progress arrive")
+print("GIF text is shown in chat and the reader, and media layout stays fixed during loading")
 
 do
     local sent
@@ -1424,11 +1438,24 @@ do
     assert(screen:read_message(outgoing))
     local reader = screen.text_preview
     screen:keypressed("y")
-    assert(screen.context_menu.items[1].action == "read_receipts")
+    local menu = screen.context_menu
+    local item = menu.items[1]
+    assert(item.action == "read_receipts" and screen:context_item_disabled(menu, item))
     screen:keypressed("return")
-    local lookup = screen.text_preview.receipts
+    assert(screen.context_menu == menu and screen.text_preview == reader)
     assert(sent["@type"] == "getMessageProperties")
+    tg:handle({["@type"] = "messageProperties", ["@extra"] = menu.receipt_lookup.token, can_get_read_date = false})
+    assert(screen:context_item_disabled(menu, item))
+    screen:keypressed("return")
+    assert(screen.context_menu == menu and screen.text_preview == reader)
+    screen:keypressed("escape")
+    screen:keypressed("y")
+    menu = screen.context_menu
+    local lookup = menu.receipt_lookup
     tg:handle({["@type"] = "messageProperties", ["@extra"] = lookup.token, can_get_read_date = true})
+    assert(not screen:context_item_disabled(menu, menu.items[1]))
+    screen:keypressed("return")
+    assert(screen.text_preview.receipts == lookup)
     assert(sent["@type"] == "getMessageReadDate")
     tg:handle({["@type"] = "messageReadDateRead", ["@extra"] = lookup.token, read_date = 1700000000})
     screen:draw_text_preview(640, 480)
@@ -1438,19 +1465,22 @@ do
     assert(screen.text_preview == reader and not tg.message_receipt_lookup)
 
     chat.type = {["@type"] = "chatTypeBasicGroup"}
-    lookup = tg:request_message_receipts(outgoing)
+    lookup = tg:check_message_receipts(outgoing)
     tg:handle({["@type"] = "messageProperties", ["@extra"] = lookup.token, can_get_viewers = true})
+    tg:fetch_message_receipt_details(lookup)
     assert(sent["@type"] == "getMessageViewers")
     local stale = lookup.token
-    lookup = tg:request_message_receipts(outgoing)
+    lookup = tg:check_message_receipts(outgoing)
     tg:handle({["@type"] = "messageViewers", ["@extra"] = stale, viewers = {{user_id = 7, view_date = 1700000001}}})
     assert(not lookup.viewers)
     tg:handle({["@type"] = "messageProperties", ["@extra"] = lookup.token, can_get_viewers = true})
+    tg:fetch_message_receipt_details(lookup)
     tg:handle({["@type"] = "messageViewers", ["@extra"] = lookup.token, viewers = {{user_id = 7, view_date = 1700000001}}})
     assert(lookup.viewers[1].view_date == 1700000001)
     chat.type = {["@type"] = "chatTypePrivate", user_id = 7}
-    lookup = tg:request_message_receipts(outgoing)
+    lookup = tg:check_message_receipts(outgoing)
     tg:handle({["@type"] = "messageProperties", ["@extra"] = lookup.token, can_get_read_date = true})
+    tg:fetch_message_receipt_details(lookup)
     tg:handle({["@type"] = "messageReadDateUserPrivacyRestricted", ["@extra"] = lookup.token})
     assert(lookup.status:find("privacy") and not lookup.viewers)
     chat.type = {["@type"] = "chatTypeSupergroup", is_channel = true}
@@ -1516,3 +1546,75 @@ do
     assert(profile:actions()[3].label == "Unblock user")
 end
 print("Channel identity, post navigation, full-size profile photos, private messages and block confirmation passed")
+
+do
+    local sent
+    local saved = {id = 11, title = "My Profile", type = {["@type"] = "chatTypePrivate", user_id = 11}}
+    local chat = {id = 42, title = "A friend", type = {["@type"] = "chatTypePrivate", user_id = 42}}
+    local plain = {id = 1511, chat_id = 42,
+        content = {["@type"] = "messageText", text = {text = "A test message"}}}
+    local photo = {id = 1512, chat_id = 42,
+        content = {["@type"] = "messagePhoto", caption = {text = "Text attached to the photo"}}}
+    local saved_message = {id = 1513, chat_id = 11, is_outgoing = true, content = plain.content}
+    local api = setmetatable({
+        me = {id = 11}, saved_chat_id = 11, current_chat_id = 42,
+        chats = {chat, saved}, chats_by_id = {[11] = saved, [42] = chat}, archive_chats_by_id = {},
+        messages = {[42] = {plain, photo}, [11] = {saved_message}}, dialog_search_results = {[42] = {plain}},
+        send = function(_, request, token) sent = request; return token end,
+    }, {__index = client})
+    local view = messenger.new(screen.fonts, api)
+    view:activate_context_item({message = photo}, {action = "forward"})
+    local rows = view:get_visible_chat_list()
+    assert(#rows == 2 and rows[1].id == 11 and rows[1].title == "Saved Messages")
+    view:keypressed("return")
+    local menu = view.context_menu
+    assert(menu.destination == 11 and not sent and #menu.items == 3)
+    view:keypressed("down")
+    view:keypressed("return")
+    assert(menu.items[1].checked and menu.items[2].checked and view.context_menu == menu and not sent)
+    view:keypressed("down")
+    view:keypressed("return")
+    assert(sent["@type"] == "forwardMessages" and sent.chat_id == 11 and sent.message_ids[1] == photo.id)
+    assert(sent.send_copy and sent.remove_caption and not view.forward_mode)
+
+    view:activate_context_item({message = plain}, {action = "forward"})
+    view:keypressed("down")
+    view:keypressed("return")
+    assert(view.context_menu.destination == 42 and view.context_menu.items[2].disabled)
+    view:keypressed("escape")
+    assert(view.forward_mode and not view.context_menu and sent.message_ids[1] == photo.id)
+    view:keypressed("escape")
+    assert(not view.forward_mode)
+
+    local function options(message, properties)
+        view:open_message_context_menu(message)
+        local menu = view.context_menu
+        assert(sent["@type"] == "getMessageProperties")
+        if properties then
+            properties["@type"], properties["@extra"] = "messageProperties", menu.receipt_lookup.token
+            api:handle(properties)
+        end
+        view:refresh_message_options(menu)
+        return menu
+    end
+    local function find(menu, action)
+        for index, item in ipairs(menu.items) do if item.action == action then return index end end
+    end
+    menu = options(saved_message, {can_be_edited = true, can_be_deleted_only_for_self = true})
+    assert(not find(menu, "edit") and find(menu, "delete"))
+    assert(not api:edit_message_text(11, saved_message.id, "Updated"))
+    menu = options(plain, {})
+    assert(not find(menu, "edit") and not find(menu, "delete"))
+    menu = options(plain, {can_be_edited = true, can_be_deleted_for_all_users = true})
+    assert(find(menu, "edit"))
+    menu.index = assert(find(menu, "delete"))
+    view:context_keypressed("return")
+    assert(sent["@type"] == "getMessageProperties" and view.context_menu.items[1].label == "Delete for everyone")
+    assert(view.context_menu.items[view.context_menu.index].label == "Cancel")
+    view:context_keypressed("up")
+    view:context_keypressed("return")
+    assert(sent["@type"] == "deleteMessages" and sent.chat_id == 42 and sent.message_ids[1] == plain.id and sent.revoke)
+    api:handle({["@type"] = "updateDeleteMessages", chat_id = 42, message_ids = {plain.id}})
+    assert(#api.messages[42] == 1 and #api.dialog_search_results[42] == 0)
+end
+print("Saved Messages forwarding, linked checkbox options, Saved Messages edit restriction, and confirmed deletion passed")

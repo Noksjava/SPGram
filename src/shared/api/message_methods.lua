@@ -45,17 +45,33 @@ return function(telegram)
         end
     end
 
-    function telegram:request_message_receipts(message)
+    function telegram:check_message_receipts(message)
+        if not self:receipt_chat(message) then return end
+        return self:check_message_options(message)
+    end
+
+    function telegram:check_message_options(message)
+        if not message or not message.chat_id or (tonumber(message.id) or 0) <= 0 then return end
         local chat = self:receipt_chat(message)
-        if not chat then return end
-        local lookup = {message = message, user_id = chat.type.user_id, status = "Loading read receipts…",
+        local lookup = {message = message, receipt_chat = chat ~= nil, user_id = chat and chat.type.user_id,
             deadline = love.timer.getTime() + 15}
         self.message_receipt_generation = (self.message_receipt_generation or 0) + 1
         lookup.request_id = "read_receipts:" .. tostring(self.message_receipt_generation)
         self.message_receipt_lookup = lookup
         lookup.token = self:send({["@type"] = "getMessageProperties", chat_id = message.chat_id,
             message_id = message.id}, lookup.request_id .. ":properties")
-        if not lookup.token then lookup.status, lookup.deadline = "Read receipts are unavailable.", nil end
+        if not lookup.token then lookup.deadline = nil end
+        return lookup
+    end
+
+    function telegram:fetch_message_receipt_details(lookup)
+        if not lookup or lookup ~= self.message_receipt_lookup or not lookup.method then return end
+        lookup.token = self:send({["@type"] = lookup.method, chat_id = lookup.message.chat_id,
+            message_id = lookup.message.id}, lookup.request_id .. ":details")
+        if lookup.token then
+            lookup.status = "Loading read receipts…"
+            lookup.deadline = love.timer.getTime() + 15
+        else lookup.status = "Could not load read receipts." end
         return lookup
     end
 
@@ -65,17 +81,11 @@ return function(telegram)
         if not lookup or extra ~= lookup.token then return true end
         lookup.token, lookup.deadline = nil, nil
         if kind == "messageProperties" then
-            local method = lookup.user_id and response.can_get_read_date and "getMessageReadDate"
-                or not lookup.user_id and response.can_get_viewers and "getMessageViewers"
-            if method then
-                lookup.token = self:send({["@type"] = method, chat_id = lookup.message.chat_id,
-                    message_id = lookup.message.id}, lookup.request_id .. ":details")
-                if lookup.token then
-                    lookup.deadline = love.timer.getTime() + 15
-                    return true
-                end
+            lookup.properties = response
+            if lookup.receipt_chat then
+                lookup.method = lookup.user_id and response.can_get_read_date and "getMessageReadDate"
+                    or not lookup.user_id and response.can_get_viewers and "getMessageViewers"
             end
-            lookup.status = "Telegram does not provide read receipts for this message."
         elseif kind == "messageViewers" then
             lookup.viewers = response.viewers or {}
             for _, viewer in ipairs(lookup.viewers) do self:ensure_user(viewer.user_id) end
@@ -140,7 +150,8 @@ return function(telegram)
         elseif kind == "messageAudio" then
             return self:document_label(message)
         elseif kind == "messageAnimation" then
-            return "[GIF]"
+            local text = content.caption and content.caption.text
+            return text and text ~= "" and text or "[GIF]"
         end
         return "[message]"
     end
@@ -777,7 +788,7 @@ return function(telegram)
             (message.can_be_saved == false or message.can_be_forwarded == false or self:is_ephemeral_media(message))))
     end
 
-    function telegram:forward_messages(to_chat_id, from_chat_id, message_ids)
+    function telegram:forward_messages(to_chat_id, from_chat_id, message_ids, hide_sender, hide_text)
         if not to_chat_id or not from_chat_id or not message_ids or #message_ids == 0 then
             return false
         end
@@ -808,9 +819,8 @@ return function(telegram)
                 from_background = false,
                 scheduling_state = json.null,
             },
-            send_copy = false,
-            remove_caption = false,
-            only_preview = false,
+            send_copy = hide_sender == true or hide_text == true,
+            remove_caption = hide_text == true,
         }, "forward:" .. tostring(to_chat_id) .. ":" .. tostring(from_chat_id))
         return true
     end
@@ -841,6 +851,7 @@ return function(telegram)
         if not chat_id or not message_ids or #message_ids == 0 then
             return
         end
+        self.action_error, self.action_status = "", "Deleting message…"
         self:send({
             ["@type"] = "deleteMessages",
             chat_id = chat_id,
@@ -849,7 +860,16 @@ return function(telegram)
         }, "delete:" .. tostring(chat_id))
     end
 
+    function telegram:is_saved_messages(chat_id)
+        if not chat_id then return false end
+        if chat_id == self.saved_chat_id then return true end
+        local chat = (self.chats_by_id or {})[chat_id] or (self.archive_chats_by_id or {})[chat_id]
+        local kind = chat and chat.type
+        return self.me and kind and kind["@type"] == "chatTypePrivate" and kind.user_id == self.me.id or false
+    end
+
     function telegram:edit_message_text(chat_id, message_id, text)
+        if self:is_saved_messages(chat_id) then return false end
         if not chat_id or not message_id or not text or text == "" then
             self.action_error = "Enter a message first."
             self.action_status = ""
@@ -1098,6 +1118,7 @@ return function(telegram)
         if not message or not message.chat_id then
             return
         end
+        self.delivery_feedback = {chat_id = message.chat_id, id = message.id, at = love.timer.getTime()}
         local list = self.messages[message.chat_id]
         if list then
             for i, existing in ipairs(list) do
@@ -1146,21 +1167,20 @@ return function(telegram)
     end
 
     function telegram:handle_delete_messages(update)
-        local list = self.messages[update.chat_id]
-        if not list then
-            return
-        end
         local deleted = {}
         for _, id in ipairs(update.message_ids or {}) do
             deleted[id] = true
         end
-        local kept = {}
-        for _, message in ipairs(list) do
-            if not deleted[message.id] then
-                kept[#kept + 1] = message
+        for _, storage in ipairs({self.messages, self.dialog_search_results or {}}) do
+            local list = storage[update.chat_id]
+            if list then
+                local kept = {}
+                for _, message in ipairs(list) do
+                    if not deleted[message.id] then kept[#kept + 1] = message end
+                end
+                storage[update.chat_id] = kept
             end
         end
-        self.messages[update.chat_id] = kept
     end
 
 end

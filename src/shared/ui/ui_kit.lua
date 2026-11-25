@@ -246,15 +246,25 @@ function ui.pixel_chat(x, y, size, color)
     for n = 2, 6, 2 do ui.rect(x + size * n, y + size * 3, size, size, color) end
 end
 
+function ui.motion_progress(age, duration)
+    if not media_settings.get("ui_motion") then return 1 end
+    return math.max(0, math.min(1, age / duration))
+end
+
+function ui.press_inset(age)
+    local t = ui.motion_progress(age, 0.14)
+    if t == 1 then return 0 end
+    return math.floor(3 * (1 - t) ^ 2 + 0.5)
+end
+
 function ui.focus_lift(age)
-    if not media_settings.get("ui_motion") then return 0 end
     if age < 0 or age >= 0.24 then return 0 end
-    local progress = age / 0.24
+    local progress = ui.motion_progress(age, 0.24)
     return math.floor(math.sin(progress * math.pi * 1.8) * (1 - progress) * 7 + 0.5)
 end
 
 function ui.focus_corners(x, y, w, h, color, lift)
-    local edge = 8 + (lift or 0)
+    local edge = math.min(math.max(4, 8 + (lift or 0)), math.max(4, math.floor(math.min(w, h) / 2)))
     for _, px in ipairs({x, x + w - edge}) do
         ui.rect(px, y, edge, 2, color)
         ui.rect(px, y + h - 2, edge, 2, color)

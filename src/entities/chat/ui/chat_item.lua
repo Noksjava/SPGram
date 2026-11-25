@@ -31,14 +31,19 @@ end
 
 function chat_item.draw(self, chat, x, y, w, h, fonts, colors, is_selected, is_current)
     local bg = colors.panel
-    if is_current then
-        bg = colors.accent_dark
-    elseif is_selected then
+    if is_current or is_selected then
         bg = colors.panel_alt
     end
     ui.retro_panel(x + 5, y + 3, w - 10, h - 6, bg, is_current and colors.accent_dark or colors.header)
+    if is_current then ui.rect(x + 7, y + 19, 2, h - 38, colors.accent) end
     if is_selected then
-        ui.focus_corners(x + 6, y + 4, w - 12, h - 8, colors.accent, self.list_focus_lift)
+        local press = self.list_press
+        local inset = press and press.id == chat.id and ui.press_inset(love.timer.getTime() - press.at) or 0
+        ui.focus_corners(x + 6 + inset, y + 4 + inset, w - 12 - 2 * inset, h - 8 - 2 * inset,
+            colors.accent, self.list_focus_lift)
+        if self.list_focus_lift and self.list_focus_lift > 0 then
+            ui.rect(x + 7, y + math.floor(h / 2) - 4, 2, 8, colors.accent)
+        end
     end
 
     local title = chat.title or ""
@@ -95,21 +100,24 @@ function chat_item.draw(self, chat, x, y, w, h, fonts, colors, is_selected, is_c
     local ping = self.tg.live_message_pings and self.tg.live_message_pings[chat.id]
     local now = ping and love.timer.getTime()
     local age = ping and now - ping.created
+    local pulse = ping and ui.focus_lift(now - (ping.motion_started or ping.created)) or 0
     if age and age >= 0 and age < 4 then
-        local lift = ui.focus_lift(age)
-        ui.rect(avatar_x + avatar_size - 2, avatar_y - 2 - lift, 7, 7, muted and ui.notification_gray or colors.green)
-        ui.rect(avatar_x + avatar_size, avatar_y - lift, 3, 3, colors.bg)
+        local color = muted and ui.notification_gray or colors.green
+        ui.rect(avatar_x + avatar_size - 2, avatar_y - 2, 7, 7, color)
+        ui.rect(avatar_x + avatar_size, avatar_y, 3, 3, colors.bg)
+        if pulse > 0 then ui.outline(avatar_x - pulse, avatar_y - pulse, avatar_size + 2 * pulse, avatar_size + 2 * pulse, color, 4) end
     end
 
     local unread = chat.unread_count or 0
     if unread > 0 then
         local badge = tostring(unread)
         local badge_w = math.max(22, fonts.tiny:getWidth(badge) + 12)
-        local badge_y = y + 52 - (age and ui.focus_lift(age) or 0)
+        local badge_y = y + 52
         local badge_color = muted and ui.notification_gray or colors.accent
         ui.retro_panel(x + w - 16 - badge_w, badge_y, badge_w, 18, badge_color, badge_color)
+        if pulse > 0 then ui.rect(x + w - 16 - badge_w, badge_y - 2, badge_w, 1, badge_color) end
         ui.printf(badge, x + w - 16 - badge_w, badge_y + 2, badge_w, "center", fonts.tiny,
-            muted and colors.white or colors.bg)
+            ui.contrasting_text(badge_color))
     end
 end
 
