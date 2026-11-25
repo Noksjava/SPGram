@@ -1,6 +1,19 @@
 
 local media_settings = {}
 
+local backgrounds = {off = true, static = true, retroscroll = true}
+local background
+
+function media_settings.chat_background()
+    return background or "off"
+end
+
+function media_settings.set_chat_background(mode)
+    if not backgrounds[mode] then return end
+    background = mode
+    media_settings.save()
+end
+
 local settings = {
     autoplay_videos = false,
     autoplay_images = true,
@@ -78,11 +91,19 @@ function media_settings.load()
         if not data:match("video_thumbnails%s*=%s*[01]") then
             settings.video_thumbnails = settings.autoplay_images
         end
+        local mode = data:match("chat_background%s*=%s*(%a+)")
+        if backgrounds[mode] then background = mode end
+    end
+    if not background then
+        local legacy = io.open("wallpaper.conf", "r")
+        local value = legacy and legacy:read("*l")
+        if legacy then legacy:close() end
+        background = value and value:match("^%s*1%s*$") and "static" or "off"
     end
 end
 
 function media_settings.save()
-    local lines = {}
+    local lines = {"chat_background=" .. media_settings.chat_background()}
     for key, val in pairs(settings) do
         lines[#lines + 1] = saved_key(key) .. "=" .. (val and "1" or "0")
     end

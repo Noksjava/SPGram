@@ -225,6 +225,15 @@ return function(telegram)
             self.send_group_status = self.send_group_status or {basicGroup = {}, supergroup = {}}
             local statuses = self.send_group_status[group["@type"]]
             if statuses then statuses[group.id] = group.status end
+            if group.is_forum ~= nil then
+                self.forum_groups = self.forum_groups or {}
+                self.forum_groups[group.id] = group.is_forum
+                local chat = self.current_chat_id and self:history_chat(self.current_chat_id)
+                local kind = chat and chat.type
+                if group.is_forum and not self.forum and kind and kind.supergroup_id == group.id then
+                    self:show_forum_topics(chat.id)
+                end
+            end
         elseif extra:match("^compose_user:") then
             local id = tonumber(extra:match(":(%d+)$"))
             if id and kind:match("^canSendMessageToUserResult") then
@@ -239,6 +248,8 @@ return function(telegram)
     function telegram:chat_send_capabilities(chat)
         if not chat or (chat.block_list and chat.block_list["@type"] == "blockListMain") then return false, false end
         local kind = chat.type or {}
+        local topic = self.forum and self.forum.chat_id == chat.id and self.forum.active
+        if topic and topic.info.is_closed then return false, false end
         local statuses = self.send_group_status or {}
         local status
         if kind["@type"] == "chatTypeSupergroup" then
@@ -267,6 +278,83 @@ return function(telegram)
         end
         local permissions = membership == "chatMemberStatusRestricted" and status.permissions or chat.permissions or {}
         return permissions.can_send_basic_messages ~= false, permissions.can_send_other_messages ~= false
+    end
+
+    function telegram:show_forum_topics(chat_id, refresh)
+        local forum = self.forum
+        if not forum or forum.chat_id ~= chat_id then
+            forum = {chat_id = chat_id, topics = {}, by_id = {}, drafts = {}, index = 1}
+            self.forum = forum
+        end
+        if refresh then
+            forum.topics, forum.by_id, forum.index, forum.first = {}, {}, 1, 1
+            forum.date, forum.message_id, forum.topic_id = nil, nil, nil
+            forum.loaded, forum.complete = nil, nil
+        end
+        forum.active = nil
+        self.messages[chat_id], self.history_state[chat_id] = {}, nil
+        self.quote_lookup = nil
+        if not forum.loaded and not forum.token then self:request_forum_topics() end
+    end
+
+    function telegram:request_forum_topics()
+        local forum = self.forum
+        if not forum or forum.token or forum.complete then return end
+        self.forum_sequence = (self.forum_sequence or 0) + 1
+        local token = "forum_topics:" .. self.forum_sequence
+        forum.error, forum.deadline = nil, love.timer.getTime() + 12
+        forum.token = self:send({["@type"] = "getForumTopics", chat_id = forum.chat_id, query = "",
+            offset_date = forum.date or 0, offset_message_id = forum.message_id or 0,
+            offset_forum_topic_id = forum.topic_id or 0, limit = 30}, token)
+        if not forum.token then forum.error = "Could not load topics." end
+    end
+
+    function telegram:handle_forum_topics(kind, extra, response)
+        local forum = self.forum
+        if kind == "updateForumTopic" or kind == "updateForumTopicInfo" then
+            local info = response.info
+            local chat_id = info and info.chat_id or response.chat_id
+            local id = info and info.forum_topic_id or response.forum_topic_id
+            local topic = forum and forum.chat_id == chat_id and forum.by_id[id]
+            if topic and info then topic.info = info
+            elseif topic then
+                topic.is_pinned = response.is_pinned
+                local read = response.last_read_inbox_message_id
+                if read and read >= (topic.last_read_inbox_message_id or 0) then
+                    topic.last_read_inbox_message_id = read
+                    if topic.last_message and read >= topic.last_message.id then topic.unread_count = 0 end
+                end
+            end
+            return true
+        end
+        if not extra:match("^forum_topics:%d+$") then return false end
+        if not forum or forum.token ~= extra then return true end
+        forum.token = nil
+        if kind ~= "forumTopics" then
+            forum.error = "Could not load topics."
+            return true
+        end
+        forum.loaded = true
+        for _, topic in ipairs(response.topics or {}) do
+            local id = topic.info and topic.info.forum_topic_id
+            if id and not forum.by_id[id] then
+                forum.by_id[id] = topic
+                forum.topics[#forum.topics + 1] = topic
+            end
+        end
+        local date, message_id, id = response.next_offset_date or 0,
+            response.next_offset_message_id or 0, response.next_offset_forum_topic_id or 0
+        forum.complete = (date == 0 and message_id == 0 and id == 0)
+            or (date == forum.date and message_id == forum.message_id and id == forum.topic_id)
+            or #(response.topics or {}) == 0
+        forum.date, forum.message_id, forum.topic_id = date, message_id, id
+        return true
+    end
+
+    function telegram:forum_message_scope(chat_id)
+        local forum = self.forum
+        local topic = forum and forum.chat_id == chat_id and forum.active
+        if topic then return {["@type"] = "messageTopicForum", forum_topic_id = topic.info.forum_topic_id} end
     end
 
     function telegram:chat_title(chat_id)
@@ -593,7 +681,7 @@ return function(telegram)
             offset = 0,
             limit = 50,
             filter = {["@type"] = "searchMessagesFilterEmpty"},
-            message_thread_id = 0,
+            topic_id = self:forum_message_scope(chat_id),
         }, "dialog_search:" .. tostring(chat_id) .. ":" .. tostring(self.dialog_search_generation[chat_id]))
     end
 

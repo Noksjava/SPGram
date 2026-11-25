@@ -396,7 +396,7 @@ return function(telegram)
     function telegram:remember_reading_position(chat_id, message_id)
         if not message_id or message_id <= 0 then return end
         local positions = self:reading_positions()
-        local key, value = string.format("%.0f", chat_id), string.format("%.0f", message_id)
+        local key, value = self:reading_position_key(chat_id), string.format("%.0f", message_id)
         if positions[key] ~= value then
             positions[key] = value
             self.reading_positions_dirty = true
@@ -406,6 +406,21 @@ return function(telegram)
             self.next_reading_save = now + 3
             self:save_reading_positions()
         end
+    end
+
+    function telegram:history_chat(chat_id)
+        return self.chats_by_id[chat_id] or (self.archive_chats_by_id or {})[chat_id]
+    end
+
+    function telegram:history_peer(chat_id)
+        local forum = self.forum
+        return forum and forum.chat_id == chat_id and forum.active or self:history_chat(chat_id)
+    end
+
+    function telegram:reading_position_key(chat_id)
+        local scope = self:forum_message_scope(chat_id)
+        local key = string.format("%.0f", chat_id)
+        return scope and (key .. ":" .. scope.forum_topic_id) or key
     end
 
     function telegram:save_reading_positions()
@@ -426,10 +441,32 @@ return function(telegram)
                 table.remove(self.notifications, index)
             end
         end
-        local chat = self.chats_by_id[chat_id] or self.archive_chats_by_id[chat_id]
+        local chat = self:history_chat(chat_id)
+        self:send({["@type"] = "openChat", chat_id = chat_id})
+        self:request_chat_send_access(chat)
+        self:request_channel_sponsors(chat, love.timer.getTime())
+        self:send({["@type"] = "getChat", chat_id = chat_id}, "getChat:" .. tostring(chat_id))
+        local kind = chat and chat.type
+        if kind and self.forum_groups and self.forum_groups[kind.supergroup_id] then
+            self:show_forum_topics(chat_id)
+        else
+            self:initialize_history(chat_id, history_loaded)
+        end
+    end
+
+    function telegram:open_forum_topic(topic)
+        local forum = self.forum
+        if not forum or not topic or forum.by_id[topic.info.forum_topic_id] ~= topic then return false end
+        forum.active = topic
+        self:initialize_history(forum.chat_id)
+        return true
+    end
+
+    function telegram:initialize_history(chat_id, history_loaded)
+        local chat = self:history_peer(chat_id)
         local unread = chat and (chat.unread_count or 0) > 0
         local read_id = chat and tonumber(chat.last_read_inbox_message_id) or 0
-        local saved_id = tonumber(self:reading_positions()[string.format("%.0f", chat_id)])
+        local saved_id = tonumber(self:reading_positions()[self:reading_position_key(chat_id)])
         local anchor = saved_id or read_id
         local resume = saved_id or (not unread and read_id > 0 and read_id or nil)
         self.history_state[chat_id] = {
@@ -439,10 +476,6 @@ return function(telegram)
             unread_remaining = not resume and unread and read_id == 0 and chat.unread_count or nil,
         }
         self.messages[chat_id] = {}
-        self:send({["@type"] = "openChat", chat_id = chat_id})
-        self:request_chat_send_access(chat)
-        self:request_channel_sponsors(chat, love.timer.getTime())
-        self:send({["@type"] = "getChat", chat_id = chat_id}, "getChat:" .. tostring(chat_id))
         if not history_loaded then self:request_history(chat_id, "initial", anchor, anchor > 0 and -15 or 0) end
     end
 
@@ -459,8 +492,7 @@ return function(telegram)
         self.history_sequence = (self.history_sequence or 0) + 1
         local token = "quote_history:" .. self.history_sequence
         local request = {chat_id = chat_id, id = id, token = token}
-        if not self:send({["@type"] = "getChatHistory", chat_id = chat_id, from_message_id = id,
-            offset = 0, limit = HISTORY_PAGE_SIZE, only_local = false}, token) then return end
+        if not self:send(self:history_request(chat_id, id, 0), token) then return end
         self.quote_lookup = request
         return request
     end
@@ -501,11 +533,33 @@ return function(telegram)
         state.loading, state.error, state.direction = true, nil, direction
         state.retry_on_reconnect, state.network_retry = nil, nil
         state.history_deadline = love.timer.getTime() + 12
-        self:send({
-            ["@type"] = "getChatHistory", chat_id = chat_id, from_message_id = message_id,
-            offset = offset, limit = HISTORY_PAGE_SIZE, only_local = false,
-        }, state.token)
+        self:send(self:history_request(chat_id, message_id, offset), state.token)
         return true
+    end
+
+    function telegram:history_request(chat_id, message_id, offset)
+        local topic = self:forum_message_scope(chat_id)
+        if topic then
+            return {["@type"] = "getForumTopicHistory", chat_id = chat_id, forum_topic_id = topic.forum_topic_id,
+                from_message_id = message_id, offset = offset, limit = HISTORY_PAGE_SIZE}
+        end
+        return {["@type"] = "getChatHistory", chat_id = chat_id, from_message_id = message_id,
+            offset = offset, limit = HISTORY_PAGE_SIZE, only_local = false}
+    end
+
+    function telegram:jump_to_newest(chat_id)
+        local state = chat_id == self.current_chat_id and self.history_state[chat_id]
+        if not state or (state.jump and state.jump.newest) then return false end
+        state.jump_error = nil
+        state.jump = {newest = true, deadline = love.timer.getTime() + 12}
+        local peer = self:history_peer(chat_id)
+        local messages = self.messages[chat_id]
+        if peer and peer.last_message and messages and messages[#messages]
+            and messages[#messages].id == peer.last_message.id then
+            self:finish_read_jump(chat_id, state, {messages = messages})
+            return true
+        end
+        return self:request_history(chat_id, "newest", 0, 0)
     end
 
     function telegram:jump_to_last_read(chat_id)
@@ -513,11 +567,24 @@ return function(telegram)
         local state = self.history_state[chat_id] or {}
         if state.loading then return false end
         self.history_state[chat_id] = state
-        local chat = self.chats_by_id[chat_id] or self.archive_chats_by_id[chat_id]
+        local chat = self:history_peer(chat_id)
         local read_id = chat and tonumber(chat.last_read_inbox_message_id) or 0
         if read_id <= 0 then
-            state.jump_error = "No last-read message yet."
-            return false
+            local unread = chat and (tonumber(chat.unread_count) or 0) or 0
+            if unread == 0 then return self:jump_to_newest(chat_id) end
+            state.jump_error = nil
+            if state.unread_divider_id then
+                for _, message in ipairs(self.messages[chat_id] or {}) do
+                    if message.id == state.unread_divider_id then
+                        state.initial_focus_id, state.keep_position_id = message.id, nil
+                        return true
+                    end
+                end
+            end
+            self.messages[chat_id] = {}
+            state.resume_id, state.unread_after, state.unread_remaining = nil, 0, unread
+            state.fallback_unread, state.fallback_read_id, state.unread_divider_id = unread, 0, nil
+            return self:request_history(chat_id, "initial", 0, 0)
         end
         state.jump_error = nil
         state.jump = {read_id = read_id, deadline = love.timer.getTime() + 12}
@@ -532,8 +599,9 @@ return function(telegram)
     end
 
     function telegram:fail_read_jump(state)
+        local destination = state.jump.newest and "newest" or "last-read"
         state.jump, state.loading, state.token = nil, false, nil
-        state.jump_error = "Could not load the last-read message. Press R2 to retry."
+        state.jump_error = "Could not load the " .. destination .. " message."
     end
 
     function telegram:check_history_timeout(now)
@@ -553,10 +621,10 @@ return function(telegram)
     end
 
     function telegram:finish_read_jump(chat_id, state, response)
-        local read_id = state.jump.read_id
+        local read_id, newest = state.jump.read_id, state.jump.newest
         local page, seen = {}, {}
         for _, message in ipairs(response.messages or {}) do
-            if message.id and message.id <= read_id and not seen[message.id] then
+            if message.id and (newest or message.id <= read_id) and not seen[message.id] then
                 seen[message.id] = true
                 page[#page + 1] = message
             end
@@ -567,9 +635,9 @@ return function(telegram)
         self.messages[chat_id] = page
         state.jump, state.loading, state.error, state.token = nil, false, nil, nil
         state.has_more = true
-        local chat = self.chats_by_id[chat_id] or self.archive_chats_by_id[chat_id]
+        local chat = self:history_peer(chat_id)
         local latest = chat and chat.last_message and chat.last_message.id
-        state.has_newer = not latest or target.id < latest
+        state.has_newer = not newest and (not latest or target.id < latest)
         state.catch_up = state.has_newer
         state.resume_id, state.unread_after, state.unread_remaining, state.keep_position_id = nil, nil, nil, nil
         state.initial_focus_id = target.id
@@ -598,6 +666,7 @@ return function(telegram)
     function telegram:close_chat()
         local chat_id = self.current_chat_id
         self.current_chat_id = nil
+        self.forum = nil
         self.sponsor_link = nil
         if chat_id then
             self:save_reading_positions()
@@ -730,7 +799,7 @@ return function(telegram)
         return self:send({
             ["@type"] = "sendMessage",
             chat_id = chat_id,
-            topic_id = topic,
+            topic_id = topic or self:forum_message_scope(chat_id),
             reply_to = reply,
             input_message_content = {
                 ["@type"] = "inputMessageText",
@@ -763,7 +832,7 @@ return function(telegram)
             ["@type"] = "viewMessages",
             chat_id = chat_id,
             message_ids = ids,
-            source = {["@type"] = "messageSourceChatHistory"},
+            source = {["@type"] = self:forum_message_scope(chat_id) and "messageSourceForumTopicHistory" or "messageSourceChatHistory"},
             force_read = false,
         }, "view:" .. tostring(chat_id) .. ":" .. tostring(ids[#ids]))
     end
@@ -973,7 +1042,7 @@ return function(telegram)
         if direction == "newer" and new_count > 0 then state.keep_position_id = state.request_anchor end
         if direction ~= "newer" then state.has_more = new_count > 0 end
         if direction ~= "older" then
-            local chat = self.chats_by_id[chat_id] or self.archive_chats_by_id[chat_id]
+            local chat = self:history_peer(chat_id)
             local latest = chat and chat.last_message and chat.last_message.id
             local newest = list[#list]
             state.has_newer = state.catch_up and newest and new_count > 0
@@ -1077,7 +1146,18 @@ return function(telegram)
 
         local history = self.history_state[message.chat_id]
         local catching_up = history and (history.jump or history.has_newer or (history.catch_up and history.loading))
-        if self.current_chat_id == message.chat_id and not catching_up then
+        local forum = self.forum
+        local scoped = forum and forum.chat_id == message.chat_id
+        local topic_id = message.topic_id and message.topic_id.forum_topic_id
+        local topic = scoped and topic_id and forum.by_id[topic_id]
+        if topic and (not topic.last_message or message.id > topic.last_message.id) then
+            topic.last_message = message
+            if not message.is_outgoing and message.id > (topic.last_read_inbox_message_id or 0) then
+                topic.unread_count = (topic.unread_count or 0) + 1
+            end
+        end
+        if self.current_chat_id == message.chat_id and not catching_up
+            and (not scoped or (topic and forum.active == topic)) then
             local list = self.messages[message.chat_id] or {}
             local replaced = false
             for i, existing in ipairs(list) do
@@ -1091,7 +1171,7 @@ return function(telegram)
                 list[#list + 1] = message
                 if history and not history.unread_divider_id and not history.fallback_unread
                     and chat and not from_me and not message.is_outgoing
-                    and message.id > (tonumber(chat.last_read_inbox_message_id) or 0) then
+                    and message.id > (tonumber((topic or chat).last_read_inbox_message_id) or 0) then
                     history.unread_divider_id = message.id
                 end
             end
@@ -1181,6 +1261,7 @@ return function(telegram)
                 storage[update.chat_id] = kept
             end
         end
+        if self.on_messages_deleted then self.on_messages_deleted(update.chat_id, deleted) end
     end
 
 end

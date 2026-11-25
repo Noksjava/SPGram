@@ -478,11 +478,12 @@ function profile_screen:keypressed(key)
             else
                 local _, result = editor.input:keypressed(key)
                 if result and result.kind == "text" then self:textinput(result.text)
-                elseif result and result.kind == "backspace" then
-                    editor[field] = ui.remove_last_utf8(editor[field])
-                    if field == "bio" then editor.bio_dirty = true end
                 elseif result and result.kind == "enter" then
                     self:textinput(editor.input:commit_pinyin()); editor.input.visible = false
+                else
+                    local value = editor.input:apply_edit(editor[field], result)
+                    if field == "bio" and editor[field] ~= value then editor.bio_dirty = true end
+                    editor[field] = value
                 end
             end
         elseif key == "up" or key == "down" then
@@ -491,6 +492,7 @@ function profile_screen:keypressed(key)
             self.editor = nil
         elseif confirm then
             if fields[editor.index] then
+                editor.input:reset_caret()
                 editor.input.visible = true
             elseif not editor.first_name:match("%S") then
                 editor.error = "First name is required."
@@ -590,7 +592,7 @@ function profile_screen:textinput(text)
     if not text or not editor or not editor.input.visible or editor.saving then return end
     local key = fields[editor.index][1]
     if key == "bio" then editor.bio_dirty = true end
-    editor[key] = editor[key] .. text:gsub("[\r\n]+", " ")
+    editor[key] = editor.input:apply_edit(editor[key], {kind = "text", text = text:gsub("[\r\n]+", " ")})
 end
 
 return profile_screen

@@ -75,6 +75,7 @@ function telegram.new()
     self.archive_load_error = nil
     self.pending_archive_changes = {}
     self.send_user_access, self.send_group_status = {}, {basicGroup = {}, supergroup = {}}
+    self.forum, self.forum_groups = nil, {}
     self.scope_notification_settings = {}
     self.profile_media = {}
     self.profile_details = {}
@@ -202,6 +203,10 @@ function telegram:send(request, extra)
     if request and request["@type"] == "downloadFile" then
         self.active_downloads = (self.active_downloads or 0) + 1
     end
+    local kind = request["@type"]
+    if self.forum and not request.topic_id and (kind == "sendMessage" or kind == "sendMessageAlbum" or kind == "sendChatAction") then
+        request.topic_id = self:forum_message_scope(request.chat_id)
+    end
     self.sequence = self.sequence + 1
     request["@extra"] = extra or ("req:" .. tostring(self.sequence))
     local encoded = json.encode(request)
@@ -312,6 +317,7 @@ function telegram:reset_account_state()
     self.archive_load_error = nil
     self.pending_archive_changes = {}
     self.send_user_access, self.send_group_status = {}, {basicGroup = {}, supergroup = {}}
+    self.forum, self.forum_groups = nil, {}
     self.scope_notification_settings = {}
     self.profile_media = {}
     self.profile_details = {}
@@ -616,7 +622,8 @@ function telegram:handle(object)
     end
     if extra:sub(1, 13) == "sponsor_link:"
         and self:handle_sponsor_link(kind, extra, object, love.timer.getTime()) then return end
-    if self:handle_gif_picker_response(kind, extra, object) or self:handle_comments_response(kind, extra, object)
+    if self:handle_forum_topics(kind, extra, object)
+        or self:handle_gif_picker_response(kind, extra, object) or self:handle_comments_response(kind, extra, object)
         or self:handle_reply_preview(kind, extra, object) or self:handle_my_profile(kind, extra, object)
         or self:handle_quote_history(kind, extra, object) or self:handle_emoji_response(kind, extra, object) or self:handle_chat_send_access(kind, extra, object) then return end
     local sponsor_report = tonumber(extra:match("^report_sponsor:(%d+)$"))

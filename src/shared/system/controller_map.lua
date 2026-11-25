@@ -4,7 +4,7 @@ M.actions = {
     {id = "confirm", label = "Confirm", key = "return"},
     {id = "back", label = "Back", key = "escape"},
     {id = "options", label = "Options", key = "y"},
-    {id = "search", label = "Shift / Media shortcuts", key = "x"},
+    {id = "search", label = "Backspace / Media shortcuts", key = "x"},
     {id = "shortcuts", label = "Controls", key = "tab"},
     {id = "keyboard", label = "Keyboard / Settings", key = "f1"},
 }

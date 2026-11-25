@@ -46,20 +46,6 @@ local function save_theme(name)
     if handle then handle:write(name .. "\n"); handle:close() end
 end
 
-local wallpaper_enabled = false
-local function load_wallpaper()
-    local handle = io.open("wallpaper.conf", "r")
-    if handle then
-        local v = handle:read("*l")
-        handle:close()
-        wallpaper_enabled = (v and v:gsub("%s+$", "") == "1")
-    end
-end
-local function save_wallpaper(v)
-    local handle = io.open("wallpaper.conf", "w")
-    if handle then handle:write((v and "1" or "0") .. "\n"); handle:close() end
-end
-
 local ABXY_LAYOUT = "modern"
 local FACE_POSITIONS
 local SELECT_BUTTON
@@ -377,7 +363,6 @@ function love.load()
     ui.load_font_preference()
     fonts = ui.load_fonts(settings_scale)
     load_theme()
-    load_wallpaper()
     media_settings.load()
     if love.mouse then
         if media_settings.get("show_mouse_cursor") then
@@ -446,11 +431,6 @@ function love.load()
                 save_button_mapping()
             end,
             get_theme = function() return ui.current_theme end,
-            get_wallpaper = function() return wallpaper_enabled and "on" or "off" end,
-            toggle_wallpaper = function()
-                wallpaper_enabled = not wallpaper_enabled
-                save_wallpaper(wallpaper_enabled)
-            end,
             cycle_theme = function()
                 local order = {"dark", "light", "redwine"}
                 local cur = (ui and ui.current_theme) or "dark"
@@ -675,6 +655,7 @@ end
 function love.update(dt)
     local started = performance_trace.clock()
     update_app(dt)
+    if current ~= screens.messenger and screens.messenger then screens.messenger.read_jump_hold = nil end
     if startup_intro and startup_intro:update(tg, sign_in_only) then startup_intro = nil end
     if releases then
         releases:poll()
@@ -745,6 +726,10 @@ handle_key = function(key, from_gamepad)
         return
     end
     if settings_slide and settings_slide.finish == 0 and current == screens.settings then return end
+    if current == screens.messenger and tg.forum and not tg.forum.active and key ~= "tab" then
+        current:keypressed(key)
+        return
+    end
     if key == "tab" and current ~= screens.settings then
         if current == screens.messenger and current.fullscreen_media and current.fullscreen_media.kind == "audio" then
             current:close_media_viewer()
@@ -839,8 +824,7 @@ handle_key = function(key, from_gamepad)
         if ms.context_menu or ms.forward_mode or ms.edit_mode or ms.fullscreen_media
             or ms.player_controls or tg.sticker_set_viewer or ms.search_active then
             ms.context_menu = nil
-            ms.forward_mode = false
-            ms.forward_from_chat_id = nil
+            if ms.forward_mode then ms:finish_forward() end
             ms.edit_mode = false
             ms.edit_message = nil
             ms.edit_input = ""
@@ -884,6 +868,12 @@ end
 
 function love.keypressed(key)
     if startup_intro then return end
+    if key == "x" then
+        local comments = current == screens.messenger and tg.comments_thread
+        local editor = current == screens.profile and current.editor
+        if (current == screens.messenger and current.keyboard.visible)
+            or (comments and comments.compose) or (editor and editor.input.visible) then return end
+    end
     if DIRECTION_KEYS[key] then
         if not should_dispatch_dir(key, "keyboard") then return end
         dir_state[key] = true
@@ -928,6 +918,8 @@ function love.gamepadreleased(_, button)
     gamepad_held[button] = nil
     local key = GAMEPAD_KEYS[button]
     if key and DIRECTION_KEYS[key] then dir_state[key] = false end
+    if ((key == "r2" and not trigger_held.triggerright) or (key == "l2" and not trigger_held.triggerleft))
+        and current.keyreleased then current:keyreleased(key) end
 end
 
 function love.gamepadaxis(_, axis, value)
@@ -939,9 +931,10 @@ function love.gamepadaxis(_, axis, value)
             trigger_held[axis] = true
             handle_key(key, true)
         end
-    elseif value < 0.35 then
+    elseif value < 0.35 and trigger_held[axis] then
         trigger_held[axis] = false
-        if current.keyreleased then current:keyreleased(key) end
+        local button = axis == "triggerleft" and "lefttrigger" or "righttrigger"
+        if not gamepad_held[button] and current.keyreleased then current:keyreleased(key) end
     end
 end
 

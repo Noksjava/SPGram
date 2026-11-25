@@ -2,6 +2,23 @@ local ui = require("src.shared.ui.ui_kit")
 local helpers = require("src.features.chat.ui.chat_screen_helpers")
 local sponsored = require("src.shared.api.sponsored")
 
+local function shift_emoji_entities(entities, start, stop, delta)
+    local insertion = #entities + 1
+    for i = #entities, 1, -1 do
+        local entity = entities[i]
+        if entity.offset >= stop then
+            entity.offset = entity.offset + delta
+            insertion = i
+        elseif entity.offset + entity.length > start then
+            table.remove(entities, i)
+            insertion = i
+        else
+            break
+        end
+    end
+    return insertion
+end
+
 return function(messenger_screen, layout)
     local HEADER_HEIGHT = layout.HEADER_HEIGHT
     local CHAT_HEADER_HEIGHT = layout.CHAT_HEADER_HEIGHT
@@ -46,6 +63,90 @@ return function(messenger_screen, layout)
         if not self.tg:jump_to_last_read(self.tg.current_chat_id) then return end
         self.sponsor_focus, self.sponsor_inline, self.sponsor_bot = nil, nil, nil
         self.composer_focus = nil
+    end
+
+    local READ_JUMP_HOLD = 2
+
+    function messenger_screen:begin_read_jump()
+        if self.read_jump_hold and not self.read_jump_hold.released then return end
+        local chat_id = self.tg.current_chat_id
+        local peer = self.tg:history_peer(chat_id)
+        if not peer then return end
+        if (tonumber(peer.unread_count) or 0) == 0 then
+            self:jump_to_newest()
+        else
+            local scope = self.tg:forum_message_scope(chat_id)
+            self.read_jump_hold = {chat_id = chat_id, topic_id = scope and scope.forum_topic_id,
+                started = love.timer.getTime()}
+        end
+    end
+
+    function messenger_screen:read_jump_progress(now)
+        local hold = self.read_jump_hold
+        if not hold then return 0 end
+        if hold.completed then return math.max(0, 1 - (now - hold.completed) / 0.18) end
+        return math.max(0, math.min(1, (now - hold.started) / READ_JUMP_HOLD))
+    end
+
+    function messenger_screen:jump_to_newest()
+        if self.tg:jump_to_newest(self.tg.current_chat_id) then
+            self.sponsor_focus, self.sponsor_inline, self.sponsor_bot = nil, nil, nil
+            self.composer_focus = nil
+        end
+    end
+
+    function messenger_screen:update_read_jump(now)
+        local hold = self.read_jump_hold
+        if not hold then return end
+        local chat_id = self.tg.current_chat_id
+        local scope = self.tg:forum_message_scope(chat_id)
+        if chat_id ~= hold.chat_id or hold.topic_id ~= (scope and scope.forum_topic_id) or self.context_menu
+            or self.text_preview or self.fullscreen_media or self.search_active or self.forward_mode
+            or self.keyboard.visible or self.tg.comments_thread or self.tg.sticker_set_viewer then
+            self.read_jump_hold = nil
+        elseif hold.released and self:read_jump_progress(now) == 0 then
+            self.read_jump_hold = nil
+        elseif not hold.completed and self:read_jump_progress(now) >= 1 then
+            hold.completed = now
+            self:jump_to_newest()
+        end
+    end
+
+    function messenger_screen:reset_topic_view(draft)
+        self.model.input = draft and draft.text or ""
+        self.draft_emoji_entities = draft and draft.entities
+        self.model.scroll, self.smooth_scroll, self.model.max_scroll = 0, 0, 0
+        self.message_cursor_id, self.display_cursor_id, self.composer_focus = nil, nil, nil
+        self.cached_conversation_layout, self.read_jump_hold = nil, nil
+        self.nav_messages, self.nav_pos, self.selected_messages = {}, {}, {}
+        self.edit_mode, self.search_active, self.keyboard.visible = false, false, false
+        self:set_search_query("", false)
+        self.keyboard:reset_caret()
+    end
+
+    function messenger_screen:forum_picker_keypressed(key)
+        local forum = self.tg.forum
+        if key == "escape" then
+            self.tg:close_chat()
+            return
+        end
+        if key == "return" or key == "kpenter" then
+            local topic = forum.topics[forum.index]
+            if self.tg:open_forum_topic(topic) then self:reset_topic_view(forum.drafts[topic.info.forum_topic_id])
+            else self.tg:request_forum_topics() end
+            return
+        end
+        if key == "y" or key == "options" then
+            if not forum.token then self.tg:show_forum_topics(forum.chat_id, true) end
+            return
+        end
+        local page = forum.visible or 6
+        local delta = key == "up" and -1 or key == "down" and 1
+            or key == "pageup" and -page or key == "pagedown" and page
+        if delta then
+            forum.index = math.max(1, math.min(#forum.topics, forum.index + delta))
+            if delta > 0 and forum.index >= #forum.topics - 2 then self.tg:request_forum_topics() end
+        end
     end
 
     function messenger_screen:cursor_index()
@@ -133,33 +234,35 @@ return function(messenger_screen, layout)
         return ""
     end
 
-    function messenger_screen:keyboard_text(text)
-        if not text or text == "" then return end
+    function messenger_screen:edit_keyboard_draft(action)
+        local text = self:keyboard_preview()
+        local updated, first, removed, inserted = self.keyboard:apply_edit(text, action)
+        if text == updated then return end
         if self.edit_mode then
-            self.edit_input = (self.edit_input or "") .. text
-            if self.tg.current_chat_id then self.tg:send_typing(self.tg.current_chat_id) end
+            self.edit_input = updated
         elseif self.search_active then
-            self:set_search_query(self.search_query .. text, false)
+            self:set_search_query(updated, false)
         elseif self.tg.current_chat_id then
-            self.model.input = self.model.input .. text
+            self.model.input = updated
+            local entities = self.draft_emoji_entities
+            if entities and #entities > 0 then
+                local start = helpers.utf16_units(text:sub(1, first))
+                local stop = start + helpers.utf16_units(removed)
+                local delta = helpers.utf16_units(inserted) - (stop - start)
+                shift_emoji_entities(entities, start, stop, delta)
+            end
+        end
+        if inserted ~= "" and not self.search_active and self.tg.current_chat_id then
             self.tg:send_typing(self.tg.current_chat_id)
         end
     end
 
+    function messenger_screen:keyboard_text(text)
+        if text and text ~= "" then self:edit_keyboard_draft({kind = "text", text = text}) end
+    end
+
     function messenger_screen:keyboard_backspace()
-        if self.edit_mode then
-            self.edit_input = ui.remove_last_utf8(self.edit_input)
-        elseif self.search_active then
-            self:set_search_query(ui.remove_last_utf8(self.search_query), false)
-        elseif self.tg.current_chat_id then
-            self.model.input = ui.remove_last_utf8(self.model.input)
-            local length = helpers.utf16_units(self.model.input)
-            while self.draft_emoji_entities and #self.draft_emoji_entities > 0 do
-                local last = self.draft_emoji_entities[#self.draft_emoji_entities]
-                if last.offset + last.length <= length then break end
-                table.remove(self.draft_emoji_entities)
-            end
-        end
+        self:edit_keyboard_draft({kind = "backspace"})
     end
 
     function messenger_screen:keyboard_enter()
@@ -214,16 +317,21 @@ return function(messenger_screen, layout)
             local glyph = item.value.emoji
             if not glyph or glyph == "" then glyph = "🙂" end
             local text = self.model.input
+            local updated, first = self.keyboard:apply_edit(text, {kind = "text", text = glyph})
+            local offset = helpers.utf16_units(text:sub(1, first))
             self.draft_emoji_entities = self.draft_emoji_entities or {}
-            self.draft_emoji_entities[#self.draft_emoji_entities + 1] = {["@type"] = "textEntity",
-                offset = helpers.utf16_units(text), length = helpers.utf16_units(glyph),
-                type = {["@type"] = "textEntityTypeCustomEmoji", custom_emoji_id = id}}
-            self.model.input = text .. glyph
+            local entities = self.draft_emoji_entities
+            local length = helpers.utf16_units(glyph)
+            local index = shift_emoji_entities(entities, offset, offset, length)
+            table.insert(entities, index, {["@type"] = "textEntity", offset = offset, length = length,
+                type = {["@type"] = "textEntityTypeCustomEmoji", custom_emoji_id = id}})
+            self.model.input = updated
             self.tg.sticker_set_viewer = nil
             self.keyboard.visible = true
             self.composer_focus = 1
         elseif item.kind == "search" then
             pack.search_input = true
+            self.keyboard:reset_caret()
             self.keyboard.visible, self.keyboard.mode = true, "text"
             self.keyboard:_sync_layout()
         elseif item.kind == "pack" then
@@ -266,13 +374,14 @@ return function(messenger_screen, layout)
         if pack.search_input then
             if key == "f1" and not self.keyboard.language_menu then
                 pack.search_input, self.keyboard.visible = nil, false
-                self.tg:search_picker_gifs((pack.query or "") .. (self.keyboard:commit_pinyin() or ""))
+                local text = self.keyboard:commit_pinyin()
+                pack.query = self.keyboard:apply_edit(pack.query or "", {kind = "text", text = text})
+                self.tg:search_picker_gifs(pack.query)
             else
                 local _, result = self.keyboard:keypressed(key)
-                if result and result.kind == "text" then pack.query = (pack.query or "") .. result.text
-                elseif result and result.kind == "backspace" then pack.query = ui.remove_last_utf8(pack.query or "")
-                elseif result and result.kind == "enter" then self:picker_keypressed(pack, "f1")
+                if result and result.kind == "enter" then self:picker_keypressed(pack, "f1")
                 elseif not self.keyboard.visible then pack.search_input = nil end
+                pack.query = self.keyboard:apply_edit(pack.query or "", result)
             end
             return
         end
@@ -627,16 +736,14 @@ return function(messenger_screen, layout)
         local handled, result = self.keyboard:keypressed(key)
         if not handled then return false end
         if result then
-            if result.kind == "text" then
-                self:keyboard_text(result.text)
-            elseif result.kind == "backspace" then
-                self:keyboard_backspace()
-            elseif result.kind == "enter" then
+            if result.kind == "enter" then
                 self:keyboard_enter()
             elseif result.kind == "stickers" then
                 self:open_stickers()
             elseif result.kind == "files" then
                 self:open_file_browser()
+            else
+                self:edit_keyboard_draft(result)
             end
         end
         return true
@@ -654,7 +761,7 @@ return function(messenger_screen, layout)
             x = pointer_x or x, y = pointer_y or y, message = message,
             items = self:context_menu_items(message),
             receipt_lookup = self.tg:check_message_options(message),
-            index = 1,
+            index = 1, delete_index = 2,
         }
         self.menu_anim = 0
     end
@@ -891,21 +998,41 @@ return function(messenger_screen, layout)
     end
 
     function messenger_screen:start_search(show_keyboard)
+        if self.keyboard then self.keyboard:reset_caret() end
         self.search_active = true
         self:set_search_query(self.search_query, false)
         if self.keyboard then self.keyboard.visible = show_keyboard end
     end
 
     function messenger_screen:begin_forward(chat_id)
+        local selected = self.model:selected_chat()
+        self.forward_anchor = {chat_id = self.tg.current_chat_id or chat_id, selected_id = selected and selected.id,
+            index = self.model.selected, offset = self.model.list_offset}
         self.forward_mode, self.forward_from_chat_id = true, chat_id
         self.search_active, self.header_focus = false, nil
-        self.model.selected = 1
+        self.model.selected, self.model.list_offset = 1, 0
         self.tg:load_saved_messages()
     end
 
     function messenger_screen:finish_forward()
         self.forward_mode, self.forward_from_chat_id = false, nil
         self.selected_messages = {}
+        local anchor = self.forward_anchor
+        self.forward_anchor = nil
+        if not anchor then return end
+        local rows = self:get_visible_chat_list()
+        self.model.visible_chats = rows
+        local selected = math.max(1, math.min(#rows, anchor.index))
+        for index, chat in ipairs(rows) do
+            if chat.id and chat.id == anchor.chat_id then
+                selected = index
+                break
+            elseif chat.id and chat.id == anchor.selected_id then
+                selected = index
+            end
+        end
+        self.model.selected = selected
+        self.model.list_offset = math.min(anchor.offset or 0, selected - 1)
     end
 
     function messenger_screen:choose_forward_destination(chat)
@@ -944,12 +1071,27 @@ return function(messenger_screen, layout)
             menu.items[#menu.items + 1] = {label = "Edit", action = "edit"}
         end
         if properties.can_be_deleted_only_for_self or properties.can_be_deleted_for_all_users then
-            menu.items[#menu.items + 1] = {label = "Delete…", action = "delete"}
+            local index = menu.delete_index or #menu.items + 1
+            table.insert(menu.items, index, {label = "Delete…", action = "delete"})
+            if menu.index >= index then menu.index = menu.index + 1 end
         end
     end
 
     function messenger_screen:activate_context_item(cm, item)
         if not item then return end
+        if item.action == "context_back" then
+            self.context_menu = cm.parent
+            return
+        end
+        if item.action == "conversation_options" then
+            if item.chat.id ~= self.tg.current_chat_id then return end
+            local items = self:chat_context_menu_items(item.chat, true)
+            items[#items + 1] = {label = "Back", action = "context_back"}
+            self.context_menu = {title = item.label, x = cm.x, y = cm.y,
+                chat = item.chat, items = items, index = 1, parent = cm}
+            self.menu_anim = 0
+            return
+        end
         if cm.comment_thread and item.action:match("^comment_") then
             return self:activate_comment_option(cm, item)
         end
@@ -1011,12 +1153,15 @@ return function(messenger_screen, layout)
             if properties.can_be_deleted_for_all_users then
                 choices[#choices + 1] = {label = "Delete for everyone", action = "confirm_delete", revoke = true}
             end
-            choices[#choices + 1] = {label = "Cancel", action = "cancel_delete"}
+            if #choices == 0 then return end
+            choices[#choices + 1] = {label = "Cancel", action = "context_back"}
             self.context_menu = {title = "Delete message?", items = choices, index = #choices,
                 x = cm.x, y = cm.y, message = cm.message, reader = cm.reader,
-                comment_thread = cm.comment_thread, receipt_thread = cm.receipt_thread}
+                comment_thread = cm.comment_thread, receipt_thread = cm.receipt_thread, parent = cm}
         elseif item.action == "confirm_delete" then
+            self:prepare_delete_effect(cm.message, cm.comment_thread or cm.receipt_thread)
             self.tg:delete_messages(cm.message.chat_id, {cm.message.id}, item.revoke)
+            if self.selected_messages then self.selected_messages[cm.message.id] = nil end
             if cm.reader and cm.receipt_thread then cm.receipt_thread.preview = nil
             elseif cm.reader then self.text_preview = nil end
         elseif item.action == "read_receipts" then
@@ -1103,6 +1248,7 @@ return function(messenger_screen, layout)
             if not properties or not properties.can_be_edited
                 or self.tg:is_saved_messages(cm.message.chat_id or self.tg.current_chat_id) then return end
             self.edit_mode = true
+            self.keyboard:reset_caret()
             self.edit_message = cm.message
             self.edit_input = cm.message.content and cm.message.content.text and cm.message.content.text.text or ""
         elseif item.action == "write_to_author" then
@@ -1143,26 +1289,29 @@ return function(messenger_screen, layout)
         end
     end
 
-    function messenger_screen:context_keypressed(key)
+    function messenger_screen:move_context_focus(delta)
         local cm = self.context_menu
         self:refresh_message_options(cm)
-        local count = #(cm.items or {})
-        if key == "up" then
-            cm.index = math.max(1, (cm.index or 1) - 1)
-            cm.scroll = cm.scroll or 0
-            if cm.index <= cm.scroll then cm.scroll = cm.index - 1 end
-        elseif key == "down" then
-            cm.index = math.min(count, (cm.index or 1) + 1)
-            cm.scroll = cm.scroll or 0
-            local _, _, _, _, _, max_visible = self:context_menu_bounds(ui.width(), ui.height())
-            if cm.index > cm.scroll + max_visible then cm.scroll = cm.index - max_visible end
+        local _, _, _, _, _, visible = self:context_menu_bounds(ui.width(), ui.height())
+        cm.index = math.max(1, math.min(#cm.items, cm.index + delta))
+        cm.scroll = math.max(cm.index - visible, math.min(cm.scroll or 0, cm.index - 1))
+    end
+
+    function messenger_screen:context_keypressed(key)
+        local cm = self.context_menu
+        if key == "up" or key == "down" then
+            self:move_context_focus(key == "up" and -1 or 1)
+        elseif key == "pageup" or key == "pagedown" then
+            local _, _, _, _, _, visible = self:context_menu_bounds(ui.width(), ui.height())
+            self:move_context_focus(key == "pageup" and -visible or visible)
         elseif key == "return" or key == "kpenter" then
+            self:refresh_message_options(cm)
             local item = cm.items and cm.items[cm.index or 1]
             if item and self:context_item_disabled(cm, item) then return end
             self.context_menu = nil
             self:activate_context_item(cm, item)
         elseif key == "escape" or key == "b" or key == "y" or key == "backspace" or key == "menu" then
-            self.context_menu = nil
+            self.context_menu = cm.parent
         end
     end
 
@@ -1185,6 +1334,7 @@ return function(messenger_screen, layout)
     end
 
     function messenger_screen:keypressed(key)
+        if self.tg.forum and not self.tg.forum.active then self:forum_picker_keypressed(key); return end
         local thread = self.tg.comments_thread
         local reader = thread and thread.preview or not thread and self.text_preview
         if reader and not self.fullscreen_media then
@@ -1299,7 +1449,7 @@ return function(messenger_screen, layout)
             self.sponsor_prompt = nil
             return
         elseif self.sponsor_focus then
-            if key == "r2" then self:jump_to_last_read(); return end
+            if key == "r2" then self:begin_read_jump(); return end
             local inline = self.sponsor_inline
             local cache = inline and self.tg:get_channel_sponsors(self.tg.current_chat_id, love.timer.getTime())
             local ad = inline and cache and cache.by_id[inline] or self.sponsor_bot or self.sponsor_ad
@@ -1632,7 +1782,7 @@ return function(messenger_screen, layout)
         end
 
         if key == "r2" and self.tg.current_chat_id then
-            self:jump_to_last_read()
+            self:begin_read_jump()
             return
         elseif key == "l2" or key == "r2" then
             self:switch_list(key == "l2" and -1 or 1)
@@ -1641,6 +1791,13 @@ return function(messenger_screen, layout)
 
         if key == "escape" then
             if self.tg.current_chat_id then
+                if self.tg.forum and self.tg.forum.active then
+                    local forum = self.tg.forum
+                    forum.drafts[forum.active.info.forum_topic_id] = {text = self.model.input, entities = self.draft_emoji_entities}
+                    self.tg:show_forum_topics(self.tg.current_chat_id)
+                    self:reset_topic_view()
+                    return
+                end
                 self.tg:close_chat()
                 self.composer_focus = nil
                 self.model.scroll = 0
@@ -1744,30 +1901,34 @@ return function(messenger_screen, layout)
     function messenger_screen:textinput(text)
         local comments = self.tg.comments_thread
         if comments then
-            if comments.compose and not comments.sending then comments.draft = comments.draft .. text end
+            if comments.compose and not comments.sending then
+                comments.draft = comments.keyboard:apply_edit(comments.draft, {kind = "text", text = text})
+            end
             return
         end
         local pack = self.tg.sticker_set_viewer
         if pack then
-            if pack.search_input then pack.query = (pack.query or "") .. text end
+            if pack.search_input then
+                pack.query = self.keyboard:apply_edit(pack.query or "", {kind = "text", text = text})
+            end
             return
         end
         if self.sticker_link_mode then
             self.sticker_link_input = self.sticker_link_input .. text
             return
         end
-        if self.edit_mode then
-            self.edit_input = self.edit_input .. text
-            if self.tg.current_chat_id then self.tg:send_typing(self.tg.current_chat_id) end
-        elseif self.search_active then
-            self:set_search_query(self.search_query .. text, false)
-        elseif self.tg.current_chat_id then
-            self.model.input = self.model.input .. text
-            self.tg:send_typing(self.tg.current_chat_id)
-        end
+        self:keyboard_text(text)
     end
 
     function messenger_screen:wheelmoved(x, y)
+        if self.tg.forum and not self.tg.forum.active then
+            if y ~= 0 then self:forum_picker_keypressed(y < 0 and "down" or "up") end
+            return
+        end
+        if self.context_menu then
+            if y ~= 0 then self:move_context_focus(y > 0 and -math.ceil(y) or -math.floor(y)) end
+            return
+        end
         local comments = self.tg.comments_thread
         if comments and not self.fullscreen_media then
             if comments.preview then
@@ -1877,6 +2038,17 @@ return function(messenger_screen, layout)
     end
 
     function messenger_screen:mousepressed(x, y, button)
+        local forum = self.tg.forum
+        if forum and not forum.active then
+            if button == 2 then self:forum_picker_keypressed("escape"); return end
+            for _, row in ipairs(forum.rows or {}) do
+                if button == 1 and x >= row.x and x < row.x + row.w and y >= row.y and y < row.y + row.h then
+                    forum.index = row.index
+                    self:forum_picker_keypressed("return")
+                    return
+                end
+            end
+        end
         if self.context_menu and self.context_menu.reader then self:context_mousepressed(x, y, button); return end
         if self.forward_mode and not self.context_menu and (button ~= 1 or x >= self:chat_list_width(ui.width())) then
             if button == 2 then self:finish_forward() end
@@ -1917,7 +2089,8 @@ return function(messenger_screen, layout)
         local jump = self.read_jump_hit
         if button == 1 and not self.sponsor_prompt and not self.fullscreen_media and not self.context_menu and jump
             and x >= jump.x and x < jump.x + jump.w and y >= jump.y and y < jump.y + jump.h then
-            self:jump_to_last_read()
+            self:begin_read_jump()
+            self:keyreleased("r2")
             return
         end
         if self.sponsor_prompt or self.sponsor_focus then return end
@@ -2150,6 +2323,16 @@ return function(messenger_screen, layout)
     function messenger_screen:keyreleased(key)
         if key == "r2" then
             self.r2_pressed = false
+            if self.read_jump_hold then
+                self:update_read_jump(love.timer.getTime())
+                local hold = self.read_jump_hold
+                if hold and not hold.completed then
+                    self.read_jump_hold = nil
+                    self:jump_to_last_read()
+                elseif hold then
+                    hold.released = true
+                end
+            end
         elseif key == "l2" then
             self.l2_pressed = false
         elseif key == "up" or key == "down" then

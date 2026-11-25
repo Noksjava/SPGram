@@ -25,6 +25,12 @@ local layouts = {
 }
 layouts.zh = layouts.en
 
+local symbols = layout(
+    "1 2 3 4 5 6 7 8 9 0",
+    "! @ # $ % ^ & * ( )",
+    "- _ = + [ ] { } / \\",
+    ". , : ; ' \" ? < > | ~ ` € £ ¥ ₽ ₴")
+
 local pinyin_data
 local CANDIDATE_COUNT = 8
 local function pinyin_candidates(syllable)
@@ -89,16 +95,18 @@ local extra_upper = {
 }
 
 local CONTROLS = {
-    {label = "Shift", action = "shift", width = 62},
-    {action = "lang", width = 36},
-    {label = "Caps", action = "caps", width = 58},
-    {label = "Space", action = "space", width = 120},
-    {label = "😀", action = "emoji", width = 52},
-    {action = "stickers", width = 54},
-    {label = "Files", action = "files", width = 58},
-    {label = "⌫", action = "backspace", width = 52},
-    {label = "⏎", action = "enter", width = 52},
-
+    {label = "Shift", action = "shift", width = 46},
+    {label = "Caps", action = "caps", width = 44},
+    {label = "?123", action = "symbols", width = 49},
+    {action = "lang", width = 32},
+    {label = "😀", action = "emoji", width = 37},
+    {action = "stickers", width = 37},
+    {label = "Files", action = "files", width = 43},
+    {label = "←", action = "cursor_left", width = 32},
+    {label = "Space", action = "space", width = 79},
+    {label = "→", action = "cursor_right", width = 32},
+    {label = "⌫", action = "backspace", width = 38},
+    {label = "Enter", action = "enter", width = 92},
 }
 
 local TEXT_CONTROLS = {}
@@ -140,6 +148,8 @@ function keyboard:_sync_layout()
     if self.mode == "emoji" then
         self.emoji_page = math.max(1, math.min(#EMOJI_PAGES, self.emoji_page or 1))
         self.layout = EMOJI_PAGES[self.emoji_page]
+    elseif self.mode == "symbols" then
+        self.layout = symbols
     else
         self.layout = layouts[self.lang]
         if self.lang == "zh" then
@@ -273,13 +283,16 @@ function keyboard:activate()
     elseif control.action == "lang" then
         self:open_language_menu()
         return {kind = "nav"}
-    elseif control.action == "emoji" then
-        self.mode = self.mode == "emoji" and "text" or "emoji"
+    elseif control.action == "emoji" or control.action == "symbols" then
+        local pending = self:commit_pinyin()
+        self.mode = self.mode == control.action and "text" or control.action
         self:_sync_layout()
-        self:_clamp_cursor()
-        return {kind = "nav"}
+        self.row = self:_row_count()
+        return pending and {kind = "text", text = pending} or {kind = "nav"}
     elseif control.action == "space" then
         return {kind = "text", text = self:commit_pinyin() or " "}
+    elseif control.action == "cursor_left" or control.action == "cursor_right" then
+        return self:move_cursor(control.action == "cursor_left" and -1 or 1)
     elseif control.action == "backspace" then
         return self:delete_key()
     elseif control.action == "enter" then
@@ -293,6 +306,43 @@ function keyboard:activate()
         return {kind = "files"}
     end
     return nil
+end
+
+function keyboard:move_cursor(direction)
+    return {kind = "cursor", direction = direction, text = self:commit_pinyin()}
+end
+
+local function adjacent_offset(text, offset, direction)
+    local next_offset = offset + direction
+    while next_offset > 0 and next_offset < #text do
+        local byte = text:byte(next_offset + 1)
+        if byte < 128 or byte >= 192 then break end
+        next_offset = next_offset + direction
+    end
+    return math.max(0, math.min(#text, next_offset))
+end
+
+function keyboard:caret(text)
+    return self.edit_text == text and self.edit_offset or #text
+end
+
+function keyboard:reset_caret()
+    self.edit_text, self.edit_offset = nil, nil
+end
+
+function keyboard:apply_edit(text, action)
+    if not action or (action.kind ~= "text" and action.kind ~= "backspace" and action.kind ~= "cursor") then
+        return text
+    end
+    local offset = self:caret(text)
+    local first, last, insert = offset, offset, action.text or ""
+    if action.kind == "backspace" then first = adjacent_offset(text, offset, -1) end
+    local updated = text:sub(1, first) .. insert .. text:sub(last + 1)
+    self.edit_text, self.edit_offset = updated, first + #insert
+    if action.kind == "cursor" then
+        self.edit_offset = adjacent_offset(updated, self.edit_offset, action.direction)
+    end
+    return updated, first, text:sub(first + 1, last), insert
 end
 
 function keyboard:delete_key()
@@ -309,7 +359,7 @@ function keyboard:keypressed(key)
 
     local menu = self.language_menu
     if menu then
-        if key == "escape" or key == "y" then self.language_menu = nil
+        if key == "escape" then self.language_menu = nil
         elseif key == "up" or key == "down" then
             menu.index = math.max(1, math.min(#menu.options, menu.index + (key == "up" and -1 or 1)))
         elseif key == "return" or key == "kpenter" or key == "a" then
@@ -320,17 +370,16 @@ function keyboard:keypressed(key)
     if key == "escape" then
         self.visible = false
         return true, {kind = "hide"}
-    elseif self.mode == "emoji" and (key == "pageup" or key == "l1") then
-        self:switch_emoji_page(-1)
+    elseif self.mode == "emoji" and (key == "l2" or key == "r2") then
+        self:switch_emoji_page(key == "l2" and -1 or 1)
         return true, {kind = "nav"}
-    elseif self.mode == "emoji" and (key == "pagedown" or key == "r1") then
-        self:switch_emoji_page(1)
-        return true, {kind = "nav"}
-    elseif self.mode == "text" and self.lang == "zh" and (key == "pageup" or key == "pagedown") then
+    elseif self.mode == "text" and self.lang == "zh" and (key == "l2" or key == "r2") then
         local max_page = math.max(1, math.ceil(#self.pinyin_options / CANDIDATE_COUNT))
-        self.pinyin_page = math.max(1, math.min(max_page, self.pinyin_page + (key == "pageup" and -1 or 1)))
+        self.pinyin_page = math.max(1, math.min(max_page, self.pinyin_page + (key == "l2" and -1 or 1)))
         self:_sync_layout()
         return true, {kind = "nav"}
+    elseif key == "pageup" or key == "pagedown" or key == "l1" or key == "r1" then
+        return true, self:move_cursor((key == "pageup" or key == "l1") and -1 or 1)
     elseif key == "up" then
         return true, self:navigate(0, -1)
     elseif key == "down" then
@@ -339,15 +388,11 @@ function keyboard:keypressed(key)
         return true, self:navigate(-1, 0)
     elseif key == "right" then
         return true, self:navigate(1, 0)
-    elseif key == "x" then
-        self.shift = not self.shift
-        return true, {kind = "nav"}
     elseif key == "y" then
-        self:open_language_menu()
         return true, {kind = "nav"}
     elseif key == "return" or key == "kpenter" or key == "a" then
         return true, self:activate()
-    elseif key == "backspace" then
+    elseif key == "backspace" or key == "x" then
         return true, self:delete_key()
     end
     return false
@@ -409,6 +454,8 @@ function keyboard:draw(preview, placeholder)
     local lang_text = self.lang:upper()
     if self.mode == "emoji" then
         lang_text = string.format("EMOJI %d/%d", self.emoji_page or 1, #EMOJI_PAGES)
+    elseif self.mode == "symbols" then
+        lang_text = lang_text .. " · SYMBOLS"
     end
     local state = {}
     if self.mode == "text" and self.lang == "zh" and self.pinyin ~= "" then
@@ -419,8 +466,9 @@ function keyboard:draw(preview, placeholder)
     if self.mode == "text" and self.caps then state[#state + 1] = "CAPS" end
     local badge = lang_text .. (#state > 0 and ("  " .. table.concat(state, " ")) or "")
     ui.text(badge, x + PAD, y + 5, tiny, colors.accent)
-    if self.mode == "emoji" then
-        ui.button_hint("L1/R1 — Emoji pages", x + KB_W - 155, y + 5, tiny, colors.muted, 145)
+    if self.mode == "emoji" or (self.mode == "text" and self.lang == "zh") then
+        local pages = self.mode == "emoji" and "L2/R2 — Emoji pages" or "L2/R2 — Candidates"
+        ui.button_hint(pages, x + KB_W - 155, y + 5, tiny, colors.muted, 145)
     end
 
     local draft_x, draft_y = x + PAD, y + badge_h
@@ -433,16 +481,25 @@ function keyboard:draw(preview, placeholder)
             local _, rows = small:getWrap(preview, text_w)
             if #rows == 0 then rows[1] = "" end
             if preview:sub(-1) == "\n" and rows[#rows] ~= "" then rows[#rows + 1] = "" end
-            cache = {text = preview, width = text_w, font = small, rows = rows}
+            local starts, next_byte = {}, 1
+            for index, line in ipairs(rows) do
+                local start = preview:find(line, next_byte, true) or next_byte
+                starts[index] = start - 1
+                next_byte = start + #line
+                if preview:sub(next_byte, next_byte) == "\n" then next_byte = next_byte + 1 end
+            end
+            cache = {text = preview, width = text_w, font = small, rows = rows, starts = starts}
             self.draft_preview = cache
         end
-        local rows = cache.rows
-        local first = math.max(1, #rows - 1)
-        for index = first, #rows do
+        local rows, starts, caret = cache.rows, cache.starts, self:caret(preview)
+        local caret_row = #rows
+        while caret_row > 1 and starts[caret_row] > caret do caret_row = caret_row - 1 end
+        local first = math.max(1, math.min(caret_row, #rows - 1))
+        for index = first, math.min(#rows, first + 1) do
             ui.text(rows[index], text_x, draft_y + 5 + (index - first) * draft_line, small, colors.text)
         end
-        local cursor = math.min(text_w, small:getWidth(rows[#rows]))
-        ui.rect(text_x + cursor + 2, draft_y + 6 + (#rows - first) * draft_line, 1, small:getHeight(), colors.accent)
+        local cursor = math.min(text_w, small:getWidth(rows[caret_row]:sub(1, caret - starts[caret_row])))
+        ui.rect(text_x + cursor + 1, draft_y + 6 + (caret_row - first) * draft_line, 1, small:getHeight(), colors.accent)
     else
         self.draft_preview = nil
         ui.text(ui.fit(placeholder or "Type here…", small, text_w), text_x, draft_y + 5, small, colors.muted)
@@ -473,31 +530,53 @@ function keyboard:draw(preview, placeholder)
         total_w = total_w + control.width
         if i > 1 then total_w = total_w + KEY_GAP end
     end
-    local key_x = x + PAD + math.floor((KB_W - PAD * 2 - total_w) / 2)
+    local scale = math.min(1, (KB_W - PAD * 2) / total_w)
+    local key_x = x + math.floor((KB_W - total_w * scale) / 2)
     local can_switch = #languages.enabled_options() > 1
+    if self.enter_theme ~= colors then
+        self.enter_theme = colors
+        self.enter_color = {}
+        for i = 1, 3 do self.enter_color[i] = 0.58 * colors.accent[i] + 0.42 * colors.panel[i] end
+    end
     for col_idx, control in ipairs(self.controls) do
+        local width = math.floor(control.width * scale)
         local selected = self.row == #self.layout + 1 and self.col == col_idx
         local active = (control.action == "shift" and self.shift)
             or (control.action == "caps" and self.caps)
         local disabled = control.action == "lang" and not can_switch
         local bg = disabled and colors.panel_alt or (selected and colors.accent_dark or (active and colors.accent or colors.bg))
         local outline = selected and not disabled and colors.accent or colors.muted
-        ui.rect(key_x, key_y, control.width, KEY_H, bg, 4)
-        ui.outline(key_x, key_y, control.width, KEY_H, outline, 4)
+        local enter = control.action == "enter"
+        if enter then
+            bg = selected and colors.accent or self.enter_color
+            outline = selected and ui.contrasting_text(bg) or colors.accent
+        end
+        ui.rect(key_x, key_y, width, KEY_H, bg, 4)
+        ui.outline(key_x, key_y, width, KEY_H, outline, 4)
         if control.action == "lang" then
-            draw_globe(key_x + control.width / 2, key_y + KEY_H / 2, disabled and colors.muted or colors.text,
+            draw_globe(key_x + width / 2, key_y + KEY_H / 2, disabled and colors.muted or colors.text,
                 disabled and 0.42 or 1)
         elseif control.action == "stickers" then
-            ui.media_picker_icon(key_x + control.width / 2, key_y + KEY_H / 2, colors.text)
+            ui.media_picker_icon(key_x + width / 2, key_y + KEY_H / 2, colors.text)
+        elseif control.action == "cursor_left" or control.action == "cursor_right" then
+            local cx, cy = key_x + width / 2, key_y + KEY_H / 2
+            local direction = control.action == "cursor_left" and -1 or 1
+            ui.set_color(colors.text)
+            love.graphics.line(cx - 6, cy, cx + 6, cy)
+            love.graphics.line(cx, cy - 5, cx + direction * 6, cy, cx, cy + 5)
+            ui.set_color(colors.white)
         else
-            ui.text(control.label, key_x + math.floor((control.width - tiny:getWidth(control.label)) / 2),
-                key_y + math.floor((KEY_H - tiny:getHeight()) / 2), tiny, active and colors.bg or colors.text)
+            local font = enter and small or tiny
+            local label = control.action == "symbols" and self.mode == "symbols" and "ABC" or control.label
+            label = ui.fit(label, font, width - 4)
+            local ink = enter and ui.contrasting_text(bg) or active and colors.bg or colors.text
+            ui.text(label, key_x + math.floor((width - font:getWidth(label)) / 2),
+                key_y + math.floor((KEY_H - font:getHeight()) / 2), font, ink)
         end
-        key_x = key_x + control.width + KEY_GAP
+        key_x = key_x + width + KEY_GAP * scale
     end
-    local tip = self.lang == "zh" and "Type Pinyin   L1/R1 — Candidates" or "{search} — Shift"
-    if can_switch then tip = tip .. "   {options} — Language" end
-    ui.button_hint(tip .. "   {back} — Close", x + PAD, y + kb_h - 18, tiny, colors.muted, KB_W - PAD * 2)
+    ui.button_hint("{search} — Backspace   L1/R1 — Move cursor   {back} — Close",
+        x + PAD, y + kb_h - 18, tiny, colors.muted, KB_W - PAD * 2)
     self:draw_language_menu()
 end
 

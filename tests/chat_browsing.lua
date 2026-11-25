@@ -1,13 +1,14 @@
 package.preload.utf8 = function() return {len = string.len} end
 
 local function noop() end
+local now = 100
 local font = {
     getHeight = function() return 14 end,
     getWidth = function(_, text) return #text * 7 end,
     getWrap = function(_, text) return #text * 7, {text} end,
 }
 love = {
-    timer = {getTime = function() return 100 end},
+    timer = {getTime = function() return now end},
     graphics = setmetatable({getWidth = function() return 640 end, getHeight = function() return 480 end},
         {__index = function() return noop end}),
     filesystem = {getInfo = function() return nil end},
@@ -38,11 +39,12 @@ local function fixture(title, chat_type, last_read, unread_count, outgoing, book
         me = bookmark_path and {id = 77},
         chats = {chat}, chats_by_id = {[chat_id] = chat}, archive_chats_by_id = {},
         users = {[42] = {id = 42, first_name = "Fixture"}}, messages = {}, history_state = {}, viewed_message_ids = {},
-        send = function(_, object, extra)
+        send = function(client, object, extra)
             requests[#requests + 1] = {object = object, extra = extra}
             if object["@type"] == "viewMessages" then
                 assert(object.chat_id == chat_id and object.force_read == false)
-                assert(object.source["@type"] == "messageSourceChatHistory")
+                local scoped = client.forum and client.forum.active
+                assert(object.source["@type"] == (scoped and "messageSourceForumTopicHistory" or "messageSourceChatHistory"))
                 for _, id in ipairs(object.message_ids) do
                     assert(not seen[id], "Duplicate view notification")
                     seen[id] = true
@@ -83,12 +85,14 @@ local function fixture(title, chat_type, last_read, unread_count, outgoing, book
     end
     local function key(name)
         screen:keypressed(name)
+        screen:keyreleased(name)
         screen.smooth_scroll = screen.model.scroll
         draw()
     end
     screen:keypressed("return")
     assert(tg.current_chat_id == chat_id)
-    return {answer = answer, focus = focus, key = key, draw = draw, seen = seen, tg = tg, chat_id = chat_id}
+    return {answer = answer, focus = focus, key = key, draw = draw, seen = seen, tg = tg, chat_id = chat_id,
+        screen = screen, requests = requests, history = history}
 end
 
 local channel = fixture("Channel", "chatTypeSupergroup", 3, 17)
@@ -254,7 +258,7 @@ never_read.draw()
 never_read.focus(1)
 never_read.key("r2")
 never_read.focus(1)
-assert(never_read.tg.history_state[never_read.chat_id].jump_error == "No last-read message yet.")
+assert(not never_read.tg.history_state[never_read.chat_id].jump_error)
 
 local slow = fixture("Delayed opening", "chatTypePrivate", 8, 11, 20)
 local initial = slow.tg.history_state[slow.chat_id]
@@ -276,6 +280,151 @@ assert(initial.jump_error and not initial.loading)
 slow.draw()
 slow.focus(9)
 print("R2 targets the last-read message, preserves the unread tail, and handles deleted markers and timeouts")
+
+do
+    local hold = fixture("Hold to newest", "chatTypePrivate", 3, 17)
+    hold.answer(3, -15, 1, 11)
+    hold.draw()
+    local sprite, scale_x, scale_y, arrow_x, arrow_y = {}, nil, nil, nil, nil
+    hold.screen.latest_arrow, hold.screen.latest_frames = sprite, {}
+    love.graphics.draw = function(image, quad, x, y, rotation, sx, sy)
+        if image == sprite then scale_x, scale_y, arrow_x, arrow_y = sx, sy, x, y end
+    end
+    hold.screen:keypressed("r2")
+    now = 101
+    hold.screen:update_read_jump(now)
+    assert(hold.screen:read_jump_progress(now) == 0.5)
+    hold.screen:draw_read_jump(600, 400, nil, now, 17)
+    assert(hold.screen.read_jump_hit.h == 53 and scale_x == 22 / 32 and scale_y == 33 / 32)
+    assert(arrow_x ~= 604 or arrow_y ~= 391)
+    local motion = require("src.shared.system.media_settings")
+    motion.set("ui_motion", false)
+    hold.screen:draw_read_jump(600, 400, nil, now, 17)
+    assert(hold.screen.read_jump_hit.h == 42 and scale_y == 22 / 32 and arrow_x == 604 and arrow_y == 402)
+    motion.set("ui_motion", true)
+    now = 101.99
+    hold.screen:update_read_jump(now)
+    assert(not hold.tg.history_state[hold.chat_id].jump)
+    now = 102
+    hold.screen:update_read_jump(now)
+    assert(hold.tg.history_state[hold.chat_id].jump.newest)
+    hold.screen:draw_read_jump(600, 400, nil, now, 17)
+    assert(hold.screen.read_jump_hit.h == 64 and scale_x == 22 / 32 and scale_y == 44 / 32)
+    love.graphics.draw = noop
+    hold.screen:keyreleased("r2")
+    hold.answer(0, 0, 10, 20)
+    hold.draw()
+    hold.focus(20)
+    now = 103
+    hold.screen:update_read_jump(now)
+    assert(not hold.screen.read_jump_hold)
+end
+
+do
+    local view = fixture("Forum", "chatTypeSupergroup", 0, 20)
+    local tg, screen, chat_id = view.tg, view.screen, view.chat_id
+    local group = tg.chats_by_id[chat_id]
+    group.type.is_channel, group.type.supergroup_id = false, 42
+    tg:handle({["@type"] = "updateSupergroup", supergroup = {["@type"] = "supergroup", id = 42, is_forum = true}})
+    local forum = assert(tg.forum)
+    assert(tg.forum_groups[42] and not forum.active and view.requests[#view.requests].object["@type"] == "getForumTopics")
+    local function topic(id, name, closed)
+        return {info = {forum_topic_id = id, name = name, is_closed = closed},
+            last_read_inbox_message_id = 3 * id_step, unread_count = 2, last_message = view.history[5]}
+    end
+    local first, second = topic(1, "General"), topic(9, "Hardware", true)
+    tg:handle({["@type"] = "forumTopics", ["@extra"] = forum.token, topics = {first},
+        next_offset_date = 50, next_offset_message_id = 3 * id_step, next_offset_forum_topic_id = 1})
+    screen:draw_forum_topics(group, forum, 224, 416, 480)
+    screen:keypressed("down")
+    assert(view.requests[#view.requests].object.offset_forum_topic_id == 1)
+    tg:handle({["@type"] = "forumTopics", ["@extra"] = forum.token, topics = {first, second}})
+    assert(#forum.topics == 2 and forum.complete)
+    screen:keypressed("return")
+    local request = view.requests[#view.requests]
+    assert(request.object["@type"] == "getForumTopicHistory" and request.object.forum_topic_id == 1)
+    assert(request.object.from_message_id == 3 * id_step)
+    tg:handle({["@type"] = "messages", ["@extra"] = request.extra,
+        messages = {view.history[5], view.history[4], view.history[3]}})
+    assert(tg.history_state[chat_id].initial_focus_id == view.history[4].id)
+    view.draw()
+    view.focus(4)
+    assert(next(view.seen))
+    tg:send_message(chat_id, "Topic reply")
+    assert(view.requests[#view.requests].object.topic_id.forum_topic_id == 1)
+    tg:search_chat_messages(chat_id, "hardware")
+    assert(view.requests[#view.requests].object.topic_id.forum_topic_id == 1)
+    local foreign = view.history[8]
+    foreign.is_outgoing = true
+    foreign.topic_id = {["@type"] = "messageTopicForum", forum_topic_id = 9}
+    tg:handle_new_message(foreign)
+    assert(#tg:get_messages(chat_id) == 3 and second.last_message == foreign)
+    screen.model.input = "Saved in General"
+    screen:keypressed("escape")
+    assert(not forum.active and #tg:get_messages(chat_id) == 0 and #forum.topics == 2)
+    screen:keypressed("down")
+    screen:keypressed("return")
+    assert(forum.active == second and not screen:can_show_composer(group))
+    assert(view.requests[#view.requests].object.forum_topic_id == 9)
+    tg:handle({["@type"] = "messages", ["@extra"] = request.extra, messages = {view.history[3]}})
+    assert(#tg:get_messages(chat_id) == 0)
+    screen:keypressed("escape")
+    screen:keypressed("up")
+    screen:keypressed("return")
+    assert(screen.model.input == "Saved in General")
+    screen:keypressed("escape")
+    screen:keypressed("escape")
+    assert(not tg.current_chat_id and not tg.forum)
+end
+print("Forum topics paginate and isolate history, search and sending. R2 holds jump to newest with a capped stretch.")
+
+do
+    local graphics = love.graphics
+    local old_image, old_batch, old_draw = graphics.newImage, graphics.newSpriteBatch, graphics.draw
+    local read, write = love.filesystem.read, love.filesystem.write
+    local added, batches, released, draw_x, draw_y = 0, 0, 0
+    local image = {getWidth = function() return 600 end, getHeight = function() return 448 end,
+        setFilter = noop, release = function() released = released + 1 end}
+    local batch = {add = function() added = added + 1 end, release = function() released = released + 1 end}
+    graphics.newImage = function(path) assert(path == "res/telegram.png"); return image end
+    graphics.newSpriteBatch = function(texture, capacity)
+        assert(texture == image and capacity == 63)
+        batches = batches + 1
+        return batch
+    end
+    graphics.draw = function(drawable, x, y)
+        assert(drawable == batch)
+        draw_x, draw_y = x, y
+    end
+    local saved
+    love.filesystem.write = function(_, value) saved = value; return true end
+    love.filesystem.read = function() return saved end
+    local media = require("src.shared.system.media_settings")
+    local screen = messenger.new(font_set, setmetatable({}, {__index = client}))
+    assert(not screen:draw_chat_background(0, 56, 640, 402, 0))
+    media.set_chat_background("retroscroll")
+    assert(saved:find("chat_background=retroscroll", 1, true))
+    assert(screen:draw_chat_background(0, 56, 640, 402, 0))
+    assert(draw_x == 0 and draw_y == 56 and added == 63 and batches == 1)
+    screen:draw_chat_background(0, 56, 640, 402, 1)
+    assert(draw_x == -74 and draw_y == 38 and batches == 1)
+    media.set("ui_motion", false)
+    screen:draw_chat_background(0, 56, 640, 402, 1)
+    assert(draw_x == 0 and draw_y == 56 and batches == 1)
+    media.set("ui_motion", true)
+    screen:draw_chat_background(0, 56, 640, 402, 335)
+    assert(draw_x == -40 and draw_y == 56 and batches == 1)
+    media.set_chat_background("static")
+    screen:draw_chat_background(0, 56, 640, 402, 1)
+    assert(draw_x == 0 and draw_y == 56)
+    saved = "chat_background=retroscroll\n"
+    media.load()
+    assert(media.chat_background() == "retroscroll")
+    media.set_chat_background("off")
+    assert(not screen:draw_chat_background(0, 56, 640, 402, 1) and released == 2)
+    graphics.newImage, graphics.newSpriteBatch, graphics.draw = old_image, old_batch, old_draw
+    love.filesystem.read, love.filesystem.write = read, write
+end
 
 local wrapping = 0
 local wrap = font.getWrap

@@ -122,6 +122,7 @@ function messenger_screen.new(fonts, tg)
     self.scroll_dir = nil
     self.scroll_hold_start = nil
     self.menu_anim = 1
+    tg.on_messages_deleted = function(chat_id, ids) self:play_delete_effect(chat_id, ids) end
     return setmetatable(self, {__index = messenger_screen})
 end
 
@@ -317,6 +318,13 @@ function messenger_screen:submit_search()
 end
 
 function messenger_screen:update(dt)
+    local now = love.timer.getTime()
+    self:update_delete_effect(now)
+    self:update_read_jump(now)
+    local forum = self.tg.forum
+    if forum and forum.token and now >= forum.deadline then
+        forum.token, forum.error = nil, "Loading topics timed out."
+    end
     if self.fullscreen_media then
         local pan_x = self.fullscreen_pan_x or 0
         local pan_y = self.fullscreen_pan_y or 0
@@ -580,15 +588,20 @@ function messenger_screen:draw()
 
     self:draw_loading_indicator(f, colors, w, left_width, right_width)
 
-    self:draw_chat_list(left_width, h)
+    local background = self:draw_chat_background(0, HEADER_HEIGHT, w, h - HEADER_HEIGHT - FOOTER_HEIGHT,
+        love.timer.getTime())
+    self:draw_chat_list(left_width, h, background)
 
     local chat = self.model:current_chat()
     self.read_jump_hit = nil
     if not chat then self.cached_conversation_layout = nil end
-    if chat then
-        self:draw_conversation(chat, left_width, right_width, h)
+    local forum = self.tg.forum
+    if chat and forum and not forum.active then
+        self:draw_forum_topics(chat, forum, left_width, right_width, h, background)
+    elseif chat then
+        self:draw_conversation(chat, left_width, right_width, h, background)
     else
-        ui.rect(left_width, HEADER_HEIGHT, right_width, h - HEADER_HEIGHT, colors.bg)
+        if not background then ui.rect(left_width, HEADER_HEIGHT, right_width, h - HEADER_HEIGHT, colors.bg) end
         local panel_w = math.min(270, right_width - 32)
         local panel_x, panel_y = left_width + (right_width - panel_w) / 2, math.floor(h / 2) - 66
         ui.retro_panel(panel_x, panel_y, panel_w, 126, colors.panel, colors.accent_dark)
@@ -597,9 +610,15 @@ function messenger_screen:draw()
         ui.button_hint("{confirm} — Open   {options} — Options",
             panel_x + 10, panel_y + 94, f.small, colors.muted, panel_w - 20)
     end
+    if not self.tg.comments_thread and not self.text_preview and not self.fullscreen_media then
+        self:draw_delete_effect(love.timer.getTime())
+    end
 
     local hint
-    if self.header_focus and not self.search_active and not self.forward_mode then
+    local back_target = forum and "   {back} — Topics" or "   {back} — Chats"
+    if forum and not forum.active then
+        hint = "↑↓ — Topics   {confirm} — Open   {options} — Refresh   {back} — Chats"
+    elseif self.header_focus and not self.search_active and not self.forward_mode then
         local action = self.header_focus == "settings" and "Settings" or "My profile"
         hint = "←/→ — Switch   {confirm} — " .. action .. "   ↓ — Return"
     elseif self.forward_mode then
@@ -611,7 +630,7 @@ function messenger_screen:draw()
         for _ in pairs(self.selected_messages) do count = count + 1 end
         hint = string.format("%d selected   {options} — Options   {back} — Clear selection", count)
     elseif self.composer_focus and chat and self:can_show_composer(chat) then
-        hint = "←/→ — Choose   {confirm} — Activate   ↑ — Messages   {back} — Chats"
+        hint = "←/→ — Choose   {confirm} — Activate   ↑ — Messages" .. back_target
     elseif chat then
         local message = self:focused_message()
         local kind = message and message.content and message.content["@type"]
@@ -622,7 +641,7 @@ function messenger_screen:draw()
         local comment = self:focused_comment_target()
         hint = "{confirm} — " .. (self.nav_albums and message and self.nav_albums[message.id] and "Post" or action)
             .. "   {options} — Options" .. (comment and "   {search} — Comments" or "")
-            .. (self:can_show_composer(chat) and "   ↓ — Compose" or "") .. "   {back} — Chats"
+            .. (self:can_show_composer(chat) and "   ↓ — Compose" or "") .. back_target
     else
         hint = "{confirm} — Open   {options} — Options   ↑ — Header   {shortcuts} — Controls"
     end
@@ -705,7 +724,10 @@ function messenger_screen:draw()
         end
     end
     local thread = self.tg.comments_thread
-    if thread and not thread.preview then self:draw_post_comments(w, h) end
+    if thread and not thread.preview then
+        self:draw_post_comments(w, h)
+        if not self.fullscreen_media then self:draw_delete_effect(love.timer.getTime()) end
+    end
     local reader = thread and thread.preview or not thread and self.text_preview
     self:draw_reader_transition(w, h, reader, thread)
     if self.context_menu and (self.context_menu.reader or self.context_menu.comment_thread) then
@@ -1455,10 +1477,13 @@ function messenger_screen:context_menu_bounds(w, h)
     local menu_w = math.min(240, w - 16)
     local row_h = math.max(24, self.fonts.small:getHeight() + 8)
     local header_h = menu.title and row_h or 0
-    local visible = math.min(#menu.items, 12, math.max(1, math.floor((h - 52 - header_h) / row_h)))
+    local visible = math.min(#menu.items, 7, math.max(1, math.floor((h - 52 - header_h) / row_h)))
     local menu_h = visible * row_h + 34 + header_h
     local x = math.max(8, math.min(menu.x, w - menu_w - 8))
     local y = math.max(8, math.min(menu.y, h - menu_h - 8))
+    local anim = media_settings.get("ui_motion") and (self.menu_anim or 1) or 1
+    local offset = math.floor((1 - anim) ^ 2 * 9 - ui.focus_lift(anim * 0.24))
+    y = math.max(8, math.min(y + offset, h - menu_h - 8))
     return x, y, menu_w, menu_h, row_h, visible, y + 6 + header_h
 end
 
@@ -1472,15 +1497,10 @@ function messenger_screen:draw_context_menu(f, colors, w, h)
     local items = self.context_menu.items
     local anim = media_settings.get("ui_motion") and (self.menu_anim or 1) or 1
     local mx2, my2, menu_w, menu_h, row_h, visible_count, first_y = self:context_menu_bounds(w, h)
-    local offset = math.floor((1 - anim) ^ 2 * 9 - ui.focus_lift(anim * 0.24))
-    offset = math.max(8 - my2, math.min(offset, h - menu_h - 8 - my2))
-    my2, first_y = my2 + offset, first_y + offset
-
-    self.context_menu.scroll = self.context_menu.scroll or 0
-    local scroll = self.context_menu.scroll
-    if scroll < 0 then scroll = 0 end
-    if scroll > math.max(0, #items - visible_count) then scroll = math.max(0, #items - visible_count) end
-    self.context_menu.scroll = scroll
+    local menu = self.context_menu
+    local scroll = math.max(0, menu.index - visible_count,
+        math.min(menu.scroll or 0, menu.index - 1, #items - visible_count))
+    menu.scroll = scroll
 
     ui.retro_panel(mx2, my2, menu_w, menu_h, colors.panel, colors.accent_dark)
     if self.context_menu.title then
@@ -1497,14 +1517,22 @@ function messenger_screen:draw_context_menu(f, colors, w, h)
                 alpha_color(colors.accent_dark, anim), 4)
         end
         local ink = self:context_item_disabled(self.context_menu, item) and colors.muted or colors.text
-        local inset = item.checked ~= nil and 32 or 12
+        local inset = item.icon and 40 or item.checked ~= nil and 32 or 12
+        if item.icon then
+            ui.pixel_icon(item.icon, mx2 + 12, row_y + math.floor((row_h - 21) / 2) - 2, colors.accent)
+            local arrow_x, arrow_y = mx2 + menu_w - 19, row_y + 7
+            ui.set_color(ink)
+            love.graphics.line(arrow_x, arrow_y - 4, arrow_x + 4, arrow_y, arrow_x, arrow_y + 4)
+        end
         if item.checked ~= nil then
             ui.outline(mx2 + 12, row_y + 3, 12, 12, ink, 2)
             if item.checked then ui.rect(mx2 + 15, row_y + 6, 6, 6, colors.accent, 1) end
         end
-        ui.text(ui.fit(item.label, f.small, menu_w - inset - 16), mx2 + inset, row_y, f.small, alpha_color(ink, anim))
+        ui.text(ui.fit(item.label, f.small, menu_w - inset - (item.icon and 26 or 16)),
+            mx2 + inset, row_y, f.small, alpha_color(ink, anim))
     end
-    ui.button_hint("↑↓ Move   {confirm} Select   {back} Close", mx2 + 10, my2 + menu_h - 23,
+    local hint = menu.parent and "↑↓ Move   {confirm} Select   {back} Back" or "↑↓ Move   {confirm} Select   {back} Close"
+    ui.button_hint(hint, mx2 + 10, my2 + menu_h - 23,
         f.tiny or f.small, alpha_color(colors.muted, anim), menu_w - 20)
     if #items > visible_count then
         local rows_h = visible_count * row_h
@@ -1883,8 +1911,30 @@ function messenger_screen:draw_edit_overlay(f, colors, w, h)
         overlay_x + 20, overlay_y + overlay_h - 28, f.tiny, colors.muted)
 end
 
+local conversation_icons = {
+    chat = {"0111110", "1000001", "1010101", "1000001", "1111110", "1010000", "1100000"},
+    group = {"0110110", "0110110", "0000000", "0110110", "1001001", "1111111", "0000000"},
+    channel = {"0000110", "0011010", "1110010", "1110010", "0011010", "0100110", "0100000"},
+}
+
+function messenger_screen:conversation_option_labels(chat)
+    local kind = chat and chat.type or {}
+    if kind.is_channel then return "Channel options", "Channel info", conversation_icons.channel end
+    if kind["@type"] == "chatTypeBasicGroup" or kind["@type"] == "chatTypeSupergroup" then
+        return "Group options", "Group info", conversation_icons.group
+    end
+    if chat and self.tg:private_chat_user_id(chat) then
+        return "Conversation options", "Contact info", conversation_icons.chat
+    end
+    return "Chat options", "Chat info", conversation_icons.chat
+end
+
 function messenger_screen:context_menu_items(message)
-    local items = {{label = "Search messages", action = "search"}}
+    local chat = self.model:current_chat()
+    local label, _, icon = self:conversation_option_labels(chat)
+    local action = chat and {label = label, action = "conversation_options", chat = chat, icon = icon}
+        or {label = "Search messages", action = "search"}
+    local items = {action}
     local selection = self.selected_messages or {}
     if message then
         items[#items + 1] = {label = selection[message.id] and "Deselect message" or "Select message",
@@ -1895,7 +1945,6 @@ function messenger_screen:context_menu_items(message)
         items[#items + 1] = {label = "Clear selection", action = "clear_selection"}
     end
     if not message then return items end
-    local chat = self.model:current_chat()
     local album = self.nav_albums and self.nav_albums[message.id]
     local comment = album and helpers.album_comment_target(chat, album)
         or (helpers.comment_count(chat, message) and message)
@@ -1924,22 +1973,6 @@ function messenger_screen:context_menu_items(message)
         local mime = doc and doc.mime_type or ""
         if mime == "text/html" or (doc and doc.file_name and doc.file_name:match("%.html?$")) then
             items[#items + 1] = {label = "View HTML", action = "preview_html"}
-        end
-    end
-
-    if content_type == "messagePhoto" then
-        local hi = self.tg and self.tg:choose_photo_hires(message)
-        if hi and hi.photo and hi.photo.id then
-            local entry = self.photos and self.photos[hi.photo.id]
-            local is_downloaded = false
-            if entry ~= nil and entry.source_path ~= nil and entry.source_path ~= "" then
-                is_downloaded = true
-            end
-            if is_downloaded then
-                items[#items + 1] = {label = "Already downloaded", action = nil}
-            else
-                items[#items + 1] = {label = "Download high resolution", action = "download_photo_hires"}
-            end
         end
     end
 
@@ -2001,9 +2034,6 @@ function messenger_screen:context_menu_items(message)
     if self.tg:receipt_chat(message) then
         items[#items + 1] = {label = "Read receipts", action = "read_receipts"}
     end
-    if self.tg:receipt_chat(message) then
-        items[#items + 1] = {label = "Read receipts", action = "read_receipts"}
-    end
     return items
 end
 
@@ -2014,23 +2044,21 @@ function messenger_screen:chat_list_for(chat)
     return chat.chat_list or {["@type"] = self.list_kind == "archive" and "chatListArchive" or "chatListMain"}
 end
 
-function messenger_screen:chat_context_menu_items(chat)
-    local items = {{label = "Search chats", action = "search"}}
+function messenger_screen:chat_context_menu_items(chat, in_conversation)
+    local items = {{label = in_conversation and "Search messages" or "Search chats", action = "search"}}
     if not chat or chat.navigation then return items end
     local muted = self.tg:is_chat_muted(chat)
     local list = self:chat_list_for(chat)
     local pinned = self.tg:chat_is_pinned(chat, list)
     local is_archived = chat and chat.chat_list and chat.chat_list["@type"] == "chatListArchive"
+    local _, info = self:conversation_option_labels(chat)
+    if in_conversation then
+        items[#items + 1] = {label = info, action = "chat_info"}
+    end
     items[#items + 1] = {label = pinned and "Unpin chat" or "Pin chat", action = "toggle_chat_pin", list = list}
     items[#items + 1] = {label = muted and "Unmute" or "Mute", action = muted and "unmute_chat" or "mute_chat"}
     items[#items + 1] = {label = is_archived and "Unarchive" or "Archive", action = is_archived and "unarchive_chat" or "archive_chat"}
-    local kind = chat.type or {}
-    local info = kind.is_channel and "Channel info" or "Chat info"
-    if kind["@type"] == "chatTypeBasicGroup" or (kind["@type"] == "chatTypeSupergroup" and not kind.is_channel) then
-        info = "Group info"
-    elseif self.tg:private_chat_user_id(chat) then
-        info = "Contact info"
-    end
+    if in_conversation then return items end
     items[#items + 1] = {label = info, action = "chat_info"}
     items[#items + 1] = {label = "Send file", action = "open_file_browser"}
     local chat_type = chat and chat.type and chat.type["@type"]
@@ -2111,12 +2139,63 @@ function messenger_screen:chat_row_at(y)
     end
 end
 
-function messenger_screen:draw_chat_list(left_width, h)
+function messenger_screen:draw_chat_background(x, y, width, height, now)
+    local mode = media_settings.chat_background()
+    local background = self.chat_background
+    if mode == "off" then
+        if background then
+            if background.batch then background.batch:release() end
+            background.image:release()
+        end
+        self.chat_background = nil
+        return false
+    end
+    if width <= 0 or height <= 0 then return false end
+    if background == nil then
+        local path = "icons/background/wavelenght-tg.png"
+        if not love.filesystem.getInfo(path) then path = "res/telegram.png" end
+        local ok, image = pcall(love.graphics.newImage, path)
+        if not ok or not image then self.chat_background = false; return false end
+        image:setFilter("linear", "linear")
+        local tile_width = 90
+        local tile_height = math.max(1, math.floor(tile_width * image:getHeight() / image:getWidth() + 0.5))
+        background = {image = image, width = tile_width, height = tile_height}
+        self.chat_background = background
+    elseif not background then
+        return false
+    end
+    local columns = math.ceil(width / background.width) + 1
+    local rows = math.ceil(height / background.height) + 1
+    if columns ~= background.columns or rows ~= background.rows then
+        if background.batch then background.batch:release() end
+        local batch = love.graphics.newSpriteBatch(background.image, columns * rows, "static")
+        local sx, sy = background.width / background.image:getWidth(), background.height / background.image:getHeight()
+        for row = 0, rows - 1 do
+            for col = 0, columns - 1 do
+                batch:add(col * background.width, row * background.height, 0, sx, sy)
+            end
+        end
+        background.batch, background.columns, background.rows = batch, columns, rows
+    end
+    local dx, dy = 0, 0
+    if mode == "retroscroll" and media_settings.get("ui_motion") then
+        dx = (-math.floor(now * 16)) % background.width
+        dy = math.floor(now * 18) % background.height
+    end
+    love.graphics.setScissor(x, y, width, height)
+    ui.set_color(ui.colors.white, 0.28)
+    love.graphics.draw(background.batch, x - dx, y - dy)
+    love.graphics.setScissor()
+    ui.set_color(ui.colors.white)
+    return true
+end
+
+function messenger_screen:draw_chat_list(left_width, h, background)
     local f = self.fonts
     local colors = ui.colors
     local bottom = h - 21
     local list_h = bottom - HEADER_HEIGHT
-    ui.rect(0, HEADER_HEIGHT, left_width, list_h, colors.panel)
+    ui.rect(0, HEADER_HEIGHT, left_width, list_h, background and alpha_color(colors.panel, 0.63) or colors.panel)
     ui.rect(left_width - 1, HEADER_HEIGHT, 1, list_h, colors.bg)
 
     local chat_list = self:get_visible_chat_list()
@@ -2356,15 +2435,64 @@ function messenger_screen:conversation_layout(chat, messages, sponsored, bot, wi
     return layout, layout.total_height
 end
 
-function messenger_screen:draw_conversation(chat, left_width, right_width, h)
+function messenger_screen:draw_forum_topics(chat, forum, x, width, height, background)
+    local f, colors = self.fonts, ui.colors
+    local y = HEADER_HEIGHT
+    if not background then ui.rect(x, y, width, height - y, colors.bg) end
+    ui.rect(x, y, width, CHAT_HEADER_HEIGHT, colors.header)
+    ui.text(ui.fit(chat.title or "Group", f.subtitle, width - 34), x + 16, y + 12, f.subtitle, colors.text)
+    ui.text("Topics", x + 16, y + 40, f.tiny, colors.accent)
+    y = y + CHAT_HEADER_HEIGHT + 8
+    local row_h = math.max(36, f.normal:getHeight() + 14)
+    local visible = math.max(1, math.floor((height - y - FOOTER_HEIGHT - 26) / (row_h + 4)))
+    forum.visible, forum.rows = visible, {}
+    local first = math.max(1, forum.index - visible + 1, math.min(forum.index, forum.first or 1))
+    forum.first = first
+    for i = first, math.min(#forum.topics, first + visible - 1) do
+        local topic = forum.topics[i]
+        local selected = i == forum.index
+        local row_x, row_w = x + 12, width - 24
+        ui.retro_panel(row_x, y, row_w, row_h, selected and colors.accent_dark or colors.panel,
+            selected and colors.accent or colors.header)
+        local badge = (topic.unread_count or 0) > 0 and tostring(topic.unread_count) or ""
+        local detail = topic.info.is_closed and "Closed" or topic.is_pinned and "Pinned" or ""
+        local right = row_x + row_w - 10
+        if badge ~= "" then
+            local bw = f.tiny:getWidth(badge) + 10
+            right = right - bw
+            ui.rect(right, y + 7, bw, row_h - 14, colors.accent, 4)
+            ui.printf(badge, right, y + (row_h - f.tiny:getHeight()) / 2, bw, "center", f.tiny,
+                ui.contrasting_text(colors.accent))
+            right = right - 7
+        end
+        if detail ~= "" then
+            right = right - f.tiny:getWidth(detail)
+            ui.text(detail, right, y + (row_h - f.tiny:getHeight()) / 2, f.tiny, colors.muted)
+            right = right - 7
+        end
+        ui.text(ui.fit(topic.info.name or "Topic", f.normal, right - row_x - 12),
+            row_x + 10, y + (row_h - f.normal:getHeight()) / 2, f.normal, colors.text)
+        forum.rows[#forum.rows + 1] = {x = row_x, y = y, w = row_w, h = row_h, index = i}
+        y = y + row_h + 4
+    end
+    local status = forum.token and "Loading topics…" or forum.error
+        or (#forum.topics == 0 and "No topics found." or not forum.complete and "Scroll for more topics")
+    if status then ui.text(status, x + 18, y + 2, f.tiny, forum.error and colors.red or colors.muted) end
+end
+
+function messenger_screen:draw_conversation(chat, left_width, right_width, h, background)
     local f = self.fonts
     local colors = ui.colors
     local panel_x = left_width
     local panel_w = right_width
 
     ui.rect(panel_x, HEADER_HEIGHT, panel_w, CHAT_HEADER_HEIGHT, colors.header)
+    local topic = self.tg.forum and self.tg.forum.active
     local profile_user_id = self.tg:private_chat_user_id(chat)
-    if profile_user_id then
+    if topic then
+        local subtitle = (chat.title or "Group") .. (topic.info.is_closed and " · Closed" or " · Topic")
+        ui.text(ui.fit(subtitle, f.tiny, panel_w - 40), panel_x + 20, HEADER_HEIGHT + 40, f.tiny, colors.muted)
+    elseif profile_user_id then
         self.tg:ensure_user(profile_user_id)
         ui.text(self.tg:user_status_text(profile_user_id), panel_x + 20, HEADER_HEIGHT + 40, f.tiny, colors.muted)
     else
@@ -2373,10 +2501,11 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h)
         local status = typ .. (self.tg:is_chat_muted(chat) and " · Muted" or "")
         ui.text(status, panel_x + 20, HEADER_HEIGHT + 40, f.tiny, colors.muted)
     end
-    local unread = tonumber(chat.unread_count) or 0
+    local unread = tonumber((topic or chat).unread_count) or 0
     local badge = unread > 99 and "99+" or tostring(unread)
     local badge_w = unread > 0 and f.tiny:getWidth(badge) + 18 or 0
-    ui.text(ui.fit(chat.title or "Chat", f.subtitle, panel_w - 52 - badge_w), panel_x + 20, HEADER_HEIGHT + 12, f.subtitle, colors.text)
+    local title = topic and topic.info.name or chat.title or "Chat"
+    ui.text(ui.fit(title, f.subtitle, panel_w - 52 - badge_w), panel_x + 20, HEADER_HEIGHT + 12, f.subtitle, colors.text)
     if unread > 0 then
         local muted = self.tg:is_chat_muted(chat)
         local x = panel_x + panel_w - 28 - badge_w
@@ -2453,7 +2582,7 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h)
     self.nav_messages = {}
     self.nav_pos = {}
 
-    ui.rect(area_x, area_y, area_w, area_h, colors.bg)
+    if not background then ui.rect(area_x, area_y, area_w, area_h, colors.bg) end
 
     local messages = self.tg:get_messages(chat.id)
     local search_loading = false
@@ -2716,28 +2845,131 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h)
         self.composer_bounds = nil
     end
     if not self.search_active and not self.forward_mode and not self.composer_focus
-        and (self.model.scroll > 26 or self:cursor_index() < #ordered - 1 or (unread > 0 and #ordered > 0)
+        and (self.read_jump_hold or self.model.scroll > 26 or self:cursor_index() < #ordered - 1 or (unread > 0 and #ordered > 0)
             or history_state and (history_state.has_newer or history_state.jump or history_state.jump_error)) then
         self:draw_read_jump(area_x + area_w - 34, area_y + area_h - 46, history_state, now, unread)
     end
 end
 
+local DELETE_EFFECT_TIME = 0.62
+
+function messenger_screen:prepare_delete_effect(message, thread)
+    if not media_settings.get("ui_motion") then return end
+    local clip, hits
+    if thread then
+        clip, hits = thread.hit_clip, thread.hits
+    elseif self.conv_area_w and self.conv_area_h then
+        clip = {x = self.conv_area_x, y = self.conv_area_y, w = self.conv_area_w, h = self.conv_area_h}
+        hits = self.message_hits
+    end
+    if not clip then return end
+    local x, y, w, h
+    for _, hit in ipairs(hits or {}) do
+        if hit.message.id == message.id and hit.message.chat_id == message.chat_id then
+            x, y, w, h = hit.bubble_x or hit.x, hit.y, hit.bubble_w or hit.w, hit.h
+            break
+        end
+    end
+    if not x and not thread then
+        for _, hit in ipairs(self.media_hits or {}) do
+            if hit.message.id == message.id and hit.message.chat_id == message.chat_id then
+                x, y, w, h = hit.media_x, hit.media_y, hit.media_w, hit.media_h
+                break
+            end
+        end
+    end
+    if not x or not y or not w or not h then return end
+    local right, bottom = math.min(x + w, clip.x + clip.w), math.min(y + h, clip.y + clip.h)
+    x, y = math.max(x, clip.x), math.max(y, clip.y)
+    if right <= x or bottom <= y then return end
+    self.pending_delete_effect = {id = message.id, chat_id = message.chat_id, thread = thread, clip = clip,
+        view_chat_id = self.tg.current_chat_id, forum_topic = self.tg.forum and self.tg.forum.active,
+        x = x, y = y, w = right - x, h = bottom - y, outgoing = self:outgoing(message),
+        deadline = love.timer.getTime() + 12}
+end
+
+function messenger_screen:delete_effect_in_view(effect)
+    return effect.view_chat_id == self.tg.current_chat_id and effect.thread == self.tg.comments_thread
+        and effect.forum_topic == (self.tg.forum and self.tg.forum.active)
+end
+
+function messenger_screen:play_delete_effect(chat_id, ids)
+    local pending = self.pending_delete_effect
+    if not pending or pending.chat_id ~= chat_id or not ids[pending.id] then return end
+    self.pending_delete_effect = nil
+    local now = love.timer.getTime()
+    if now < pending.deadline and media_settings.get("ui_motion") and self:delete_effect_in_view(pending) then
+        pending.started = now
+        self.delete_effect = pending
+    end
+end
+
+function messenger_screen:update_delete_effect(now)
+    if not media_settings.get("ui_motion") then
+        self.pending_delete_effect, self.delete_effect = nil, nil
+        return
+    end
+    local pending, effect = self.pending_delete_effect, self.delete_effect
+    if pending and (now >= pending.deadline or not self:delete_effect_in_view(pending)) then
+        self.pending_delete_effect = nil
+    end
+    if effect and (now - effect.started >= DELETE_EFFECT_TIME or not self:delete_effect_in_view(effect)) then
+        self.delete_effect = nil
+    end
+end
+
+function messenger_screen:draw_delete_effect(now)
+    local effect = self.delete_effect
+    if not effect or not media_settings.get("ui_motion") or not self:delete_effect_in_view(effect) then return end
+    local elapsed = now - effect.started
+    if elapsed < 0 or elapsed >= DELETE_EFFECT_TIME then return end
+    local colors, clip = ui.colors, effect.clip
+    local base = effect.outgoing and colors.accent_dark or colors.panel_alt
+    local columns = math.max(3, math.min(14, math.ceil(effect.w / 12)))
+    local rows = math.max(2, math.min(8, math.ceil(effect.h / 9)))
+    local cell_w, cell_h = effect.w / columns, effect.h / rows
+    love.graphics.setScissor(clip.x, clip.y, clip.w, clip.h)
+    for row = 0, rows - 1 do
+        for col = 0, columns - 1 do
+            local seed = (row * 37 + col * 57) % 101
+            local delay = (1 - col / columns) * 0.10 + (seed % 8) * 0.004
+            local drift = math.max(0, (elapsed - delay) / (DELETE_EFFECT_TIME - delay))
+            local collapse = math.min(1, drift * 4)
+            local pixel = 2 + seed % 4
+            local w, h = cell_w + (pixel - cell_w) * collapse, cell_h + (pixel - cell_h) * collapse
+            local wind = drift * drift
+            local x = effect.x + (col + 0.5) * cell_w - w / 2 + wind * (48 + seed * 1.1)
+            local y = effect.y + (row + 0.5) * cell_h - h / 2 - wind * (13 + seed * 0.62)
+            local ink = seed % 13 == 0 and colors.accent or seed % 7 == 0 and colors.text or base
+            ui.set_color(ink, (1 - drift) ^ 1.6 * (ink == base and 0.88 or 0.98))
+            love.graphics.rectangle("fill", math.floor(x), math.floor(y), math.ceil(w), math.ceil(h))
+        end
+    end
+    love.graphics.setScissor()
+    ui.set_color(colors.white)
+end
+
 function messenger_screen:draw_read_jump(x, y, state, now, unread)
     local colors, font = ui.colors, self.fonts.tiny
     local w, h = 30, 42
-    self.read_jump_hit = {x = x, y = y, w = w, h = h}
+    local progress = self:read_jump_progress(now)
+    local motion = media_settings.get("ui_motion")
+    local stretch = motion and progress * progress * (3 - 2 * progress) or 0
+    local extend = math.floor(22 * stretch + 0.5)
+    self.read_jump_hit = {x = x, y = y - extend, w = w, h = h + extend}
     local loading = state and state.jump
     local failed = state and state.jump_error
     local has_unread = unread > 0
     local ink = has_unread and colors.accent or colors.muted
-    ui.retro_panel(x, y, w, h, colors.header, failed and colors.red or (has_unread and colors.accent_dark or colors.panel_alt))
-    local badge_top = y
+    ui.retro_panel(x, y - extend, w, h + extend, colors.header,
+        failed and colors.red or (progress > 0 and colors.accent or has_unread and colors.accent_dark or colors.panel_alt))
+    local badge_top = y - extend
     if has_unread then
         local label = tostring(unread)
         local badge_w = math.max(21, font:getWidth(label) + 10)
         local badge_h = font:getHeight() + 5
         local badge_x = x + math.min(w - badge_w, math.floor((w - badge_w) / 2))
-        badge_top = y - badge_h - 5
+        badge_top = badge_top - badge_h - 5
         ui.outline(badge_x - 2, badge_top - 2, badge_w + 4, badge_h + 4, alpha_color(ink, 0.22), 5)
         ui.outline(badge_x - 1, badge_top - 1, badge_w + 2, badge_h + 2, alpha_color(ink, 0.5), 4)
         ui.rect(badge_x, badge_top, badge_w, badge_h, ink, 3)
@@ -2755,18 +2987,29 @@ function messenger_screen:draw_read_jump(x, y, state, now, unread)
             end
         end
     end
-    if loading then
+    if loading and progress == 0 then
         ui.printf("…", x, y + 6, w, "center", self.fonts.small, ink)
     elseif self.latest_arrow then
         local time = now % 0.97
-        local frame = media_settings.get("ui_motion") and (time < 0.25 and 1 or math.min(7, 2 + math.floor((time - 0.25) / 0.12))) or 1
+        local frame = motion and (time < 0.25 and 1 or math.min(7, 2 + math.floor((time - 0.25) / 0.12))) or 1
         love.graphics.setColor(1, 1, 1, 1)
         local variant = has_unread and frame or frame + 7
-        love.graphics.draw(self.latest_arrow, self.latest_frames[variant], x + 4, y + 2, 0, 22 / 32, 22 / 32)
+        local shake, bounce = 0, 0
+        if motion and progress > 0 and progress < 1 and not self.read_jump_hold.completed then
+            local elapsed = now - self.read_jump_hold.started
+            local energy = math.sin(math.pi * progress) ^ 0.7
+            shake = math.floor(math.sin(32 * elapsed + 4 * elapsed * elapsed) * 3 * energy + 0.5)
+            bounce = math.floor(math.abs(math.sin(10 * elapsed)) * 2 * energy + 0.5)
+        end
+        love.graphics.draw(self.latest_arrow, self.latest_frames[variant], x + 4 + shake, y + 2 - extend - bounce,
+            0, 22 / 32, (22 + extend) / 32)
     else
         ui.printf("↓", x, y + 5, w, "center", self.fonts.normal, ink)
     end
     ui.printf("R2", x, y + 25, w, "center", font, failed and colors.red or (has_unread and colors.text or colors.muted))
+    if progress > 0 then
+        ui.rect(x + 2, y + h - 2, math.floor((w - 4) * progress + 0.5), 2, colors.accent, 1)
+    end
     if failed then
         local width = font:getWidth(failed) + 14
         ui.retro_panel(x + w - width, badge_top - 25, width, 22, colors.header, colors.red)

@@ -104,10 +104,18 @@ press("a")
 assert(not next(screen.selected_messages))
 press("y")
 press("a")
+local conversation_menu = assert(screen.context_menu)
+assert(conversation_menu.parent and conversation_menu.items[1].action == "search"
+    and conversation_menu.items[2].action == "chat_info")
+press("b")
+assert(screen.context_menu == conversation_menu.parent and screen.context_menu.items[1].icon)
+press("a")
+press("a")
 assert(screen.search_active and screen.keyboard.visible)
 press("b")
 assert(not screen.search_active and not screen.keyboard.visible and tg.current_chat_id == 42)
 press("y")
+press("a")
 press("a")
 screen:set_search_query("test", false)
 press("start")
@@ -478,13 +486,24 @@ local function pick(label)
     end
     error("Missing key: " .. label)
 end
+local function control(action)
+    for column, key in ipairs(typed.controls) do
+        if key.action == action then
+            typed.row, typed.col = #typed.layout + 1, column
+            return typed:activate()
+        end
+    end
+    error("Missing control: " .. action)
+end
 assert(typed.lang == "en" and pick("q").text == "q")
 typed:keypressed("y")
+assert(not typed.language_menu)
+control("lang")
 assert(typed.language_menu and typed.language_menu.index == 1 and typed.lang == "en")
 typed:keypressed("escape")
 assert(not typed.language_menu and typed.visible and typed.lang == "en")
 local function choose_next_language()
-    typed:keypressed("y")
+    control("lang")
     assert(typed.language_menu)
     typed:keypressed("down")
     typed:keypressed("return")
@@ -493,8 +512,11 @@ end
 for _, item in ipairs({{"fr", "é", "É"}, {"ru", "ъ", "Ъ"}, {"uk", "ї", "Ї"}, {"pl", "ż", "Ż"}}) do
     choose_next_language()
     assert(typed.lang == item[1])
-    typed:keypressed("x")
+    control("shift")
     assert(pick(item[2]).text == item[3])
+    control("symbols")
+    assert(pick("1").text == "1" and pick("@").text == "@")
+    control("symbols")
 end
 choose_next_language()
 assert(typed.lang == "zh")
@@ -502,23 +524,61 @@ assert(pick("n").kind == "nav" and pick("i").kind == "nav")
 assert(typed.pinyin == "ni")
 typed:draw("Message")
 assert(drawn["ZH  ni · 1/" .. math.ceil(#typed.pinyin_options / 8)])
-typed:keypressed("pagedown")
+typed:keypressed("r2")
 assert(typed.pinyin_page == 2)
-typed:keypressed("pageup")
+typed:keypressed("l2")
 assert(pick("你").text == "你" and typed.pinyin == "")
 pick("h")
 pick("a")
 pick("o")
 assert(typed:commit_pinyin() == "好")
 pick("x")
-typed:keypressed("backspace")
+typed:keypressed("x")
 assert(typed.pinyin == "")
+control("symbols")
+assert(pick("2").text == "2" and typed.pinyin == "")
+control("symbols")
+local draft = "Aé你😀"
+local _, move = typed:keypressed("pageup")
+assert(typed:apply_edit(draft, move) == draft and typed:caret(draft) == #"Aé你")
+draft = typed:apply_edit(draft, control("cursor_left"))
+assert(typed:caret(draft) == #"Aé")
+local _, erase = typed:keypressed("x")
+draft = typed:apply_edit(draft, erase)
+assert(draft == "A你😀")
+draft = typed:apply_edit(draft, {kind = "text", text = "!"})
+assert(draft == "A!你😀" and typed:caret(draft) == 2)
+draft = typed:apply_edit(draft, control("cursor_right"))
+assert(typed:caret(draft) == #"A!你")
+local _, next_cursor = typed:keypressed("pagedown")
+assert(typed:apply_edit(draft, next_cursor) == draft and typed:caret(draft) == #draft)
+assert(control("enter").kind == "enter")
+do
+    local kit = require("src.shared.ui.ui_kit")
+    local theme, rectangle = kit.current_theme, kit.rect
+    for name in pairs(kit.themes) do
+        kit.set_theme(name)
+        local enter_drawn = false
+        drawn.Enter = nil
+        kit.rect = function(x, y, w, h, color, radius)
+            if w == 92 and h == 38 then
+                assert(color == kit.colors.accent or color == typed.enter_color)
+                enter_drawn = true
+            end
+            rectangle(x, y, w, h, color, radius)
+        end
+        typed:draw(draft)
+        assert(enter_drawn and drawn.Enter and typed.enter_theme == kit.colors)
+    end
+    kit.rect = rectangle
+    kit.set_theme(theme)
+end
 for _, language in ipairs({"en","fr","ru","uk","pl"}) do assert(preferences.toggle(language)) end
 assert(not preferences.toggle("zh") and preferences.current() == "zh")
 assert(preferences.toggle("en"))
 assert(preferences.toggle("zh"))
 assert(preferences.current() == "en")
-typed:keypressed("y")
+control("lang")
 assert(not typed.language_menu and typed.visible)
 
 menu:enter()
@@ -1100,6 +1160,12 @@ do
     assert(pack.is_installed and #library.installed == 1)
     screen:activate_picker_item(pack, pack_entries[2])
     assert(screen.model.input == "你好🙂 🎮" and not tg.sticker_set_viewer)
+    tg.typing_sent_at = {}
+    screen:handle_virtual_keyboard("pageup")
+    screen:keyboard_text("!")
+    assert(screen.model.input == "你好🙂 !🎮" and screen.draft_emoji_entities[1].offset == 6)
+    screen:handle_virtual_keyboard("x")
+    assert(screen.model.input == "你好🙂 🎮" and screen.draft_emoji_entities[1].offset == 5)
     screen:send()
     local sent = audio_requests[#audio_requests].input_message_content.text
     local entity = sent.entities[1]
@@ -1585,6 +1651,22 @@ do
     assert(view.forward_mode and not view.context_menu and sent.message_ids[1] == photo.id)
     view:keypressed("escape")
     assert(not view.forward_mode)
+    local far
+    for index = 1, 24 do
+        far = {id = 4000 + index, title = "Forward target " .. index, type = chat.type}
+        api.chats[#api.chats + 1] = far
+        api.chats_by_id[far.id] = far
+    end
+    view:activate_context_item({message = photo}, {action = "forward"})
+    rows = view:get_visible_chat_list()
+    view.model.selected = #rows
+    view:layout_chat_list(rows, 460)
+    assert(view.model.list_offset > 0 and rows[#rows] == far)
+    view:keypressed("return")
+    view.context_menu.index = 3
+    view:keypressed("return")
+    assert(sent.chat_id == far.id and api.current_chat_id == chat.id and view.model:selected_chat() == chat)
+    assert(view.model.list_offset == 0)
 
     local function options(message, properties)
         view:open_message_context_menu(message)
@@ -1600,21 +1682,73 @@ do
     local function find(menu, action)
         for index, item in ipairs(menu.items) do if item.action == action then return index end end
     end
+    api.choose_photo_hires = function() return {photo = {id = 1812}} end
+    assert(not find({items = view:context_menu_items(photo)}, "download_photo_hires"))
     menu = options(saved_message, {can_be_edited = true, can_be_deleted_only_for_self = true})
-    assert(not find(menu, "edit") and find(menu, "delete"))
+    assert(not find(menu, "edit") and find(menu, "delete") == 2)
+    assert(not next(view.selected_messages))
+    menu.index = 2
+    view:context_keypressed("return")
+    assert(view.context_menu.items[1].label == "Delete for me")
+    view:context_keypressed("return")
+    assert(view.context_menu == menu and sent["@type"] == "getMessageProperties")
     assert(not api:edit_message_text(11, saved_message.id, "Updated"))
     menu = options(plain, {})
     assert(not find(menu, "edit") and not find(menu, "delete"))
     menu = options(plain, {can_be_edited = true, can_be_deleted_for_all_users = true})
-    assert(find(menu, "edit"))
+    assert(find(menu, "edit") and find(menu, "delete") == 2)
+    local _, y, _, height, _, visible = view:context_menu_bounds(640, 480)
+    assert(#menu.items > visible and visible == 7 and y >= 8 and y + height <= 472)
+    view:wheelmoved(0, -3)
+    assert(menu.index == 4)
+    view:context_keypressed("pagedown")
+    assert(menu.scroll > 0 and menu.index <= menu.scroll + visible)
+    view:context_keypressed("pageup")
+    assert(menu.index <= menu.scroll + visible)
     menu.index = assert(find(menu, "delete"))
     view:context_keypressed("return")
     assert(sent["@type"] == "getMessageProperties" and view.context_menu.items[1].label == "Delete for everyone")
     assert(view.context_menu.items[view.context_menu.index].label == "Cancel")
     view:context_keypressed("up")
+    view.conv_area_x, view.conv_area_y, view.conv_area_w, view.conv_area_h = 192, 100, 448, 320
+    view.message_hits = {{message = plain, bubble_x = 220, y = 200, bubble_w = 140, h = 56}}
     view:context_keypressed("return")
     assert(sent["@type"] == "deleteMessages" and sent.chat_id == 42 and sent.message_ids[1] == plain.id and sent.revoke)
+    assert(view.pending_delete_effect and not view.delete_effect)
+    api:handle({["@type"] = "updateDeleteMessages", chat_id = 42, message_ids = {1900}})
+    assert(view.pending_delete_effect and not view.delete_effect)
     api:handle({["@type"] = "updateDeleteMessages", chat_id = 42, message_ids = {plain.id}})
     assert(#api.messages[42] == 1 and #api.dialog_search_results[42] == 0)
+    assert(not view.pending_delete_effect and view.delete_effect)
+    local rectangle, pixels, furthest = love.graphics.rectangle, 0, 0
+    love.graphics.rectangle = function(_, x)
+        pixels, furthest = pixels + 1, math.max(furthest, x)
+    end
+    view:draw_delete_effect(view.delete_effect.started + 0.44)
+    assert(pixels > 0 and pixels <= 112 and furthest > 360)
+    love.graphics.rectangle = rectangle
+    local motion = require("src.shared.system.media_settings")
+    motion.set("ui_motion", false)
+    view:update_delete_effect(1.5)
+    assert(not view.delete_effect)
+    view:prepare_delete_effect(plain)
+    assert(not view.pending_delete_effect)
+    motion.set("ui_motion", true)
+
+    for _, kind in ipairs({
+        {["@type"] = "chatTypeSupergroup", is_channel = true, options = "Channel options", info = "Channel info"},
+        {["@type"] = "chatTypeBasicGroup", options = "Group options", info = "Group info"},
+        {["@type"] = "chatTypePrivate", user_id = 8, options = "Conversation options", info = "Contact info"},
+    }) do
+        local active = api.chats_by_id[42]
+        active.type = kind
+        view:open_message_context_menu(photo)
+        assert(view.context_menu.items[1].label == kind.options and view.context_menu.items[1].icon)
+        view:context_keypressed("return")
+        assert(view.context_menu.items[2].label == kind.info)
+        view:context_keypressed("down")
+        view:context_keypressed("return")
+        assert(view.wants_profile_chat_id == 42 and not view.context_menu)
+    end
 end
 print("Saved Messages forwarding, linked checkbox options, Saved Messages edit restriction, and confirmed deletion passed")

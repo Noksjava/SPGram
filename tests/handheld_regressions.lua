@@ -379,6 +379,25 @@ for i, expected in ipairs(sections) do
         menu:keypressed("return")
         assert(menu.section.id == "performance" and menu:items()[1].id == "memory_preset")
         assert(menu:keypressed("escape") == nil and menu.section.id == "visual" and menu.selected_item == 1)
+        for index, item in ipairs(menu:items()) do
+            if item.id == "backgrounds" then menu.selected_item = index; break end
+        end
+        menu:keypressed("return")
+        assert(menu.section.label == "Backgrounds")
+        menu:activate_item(menu:items()[2])
+        local media = require("src.shared.system.media_settings")
+        assert(media.chat_background() == "static")
+        menu.selected_item = 3
+        menu:keypressed("return")
+        assert(menu.section.label == "Animated" and menu:items()[1].id == "retroscroll")
+        menu:keypressed("return")
+        assert(media.chat_background() == "retroscroll")
+        menu:keypressed("escape")
+        assert(menu.section.label == "Backgrounds" and menu.selected_item == 3)
+        menu:activate_item(menu:items()[1])
+        assert(media.chat_background() == "off")
+        menu:keypressed("escape")
+        assert(menu.section.id == "visual")
     end
     if expected[1] == "language" or expected[1] == "controls" then
         menu:keypressed("return")

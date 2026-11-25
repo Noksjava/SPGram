@@ -219,16 +219,15 @@ return function(screen)
                 return
             end
             if key == "f1" and not input.language_menu then
-                thread.draft = thread.draft .. (input:commit_pinyin() or "")
+                thread.draft = input:apply_edit(thread.draft, {kind = "text", text = input:commit_pinyin()})
                 self.tg:send_comment(thread)
             elseif key == "escape" and not input.language_menu then
                 thread.compose, input.visible = false, false
             else
                 local _, result = input:keypressed(key)
-                if result and result.kind == "text" then thread.draft = thread.draft .. result.text
-                elseif result and result.kind == "backspace" then thread.draft = ui.remove_last_utf8(thread.draft)
-                elseif result and result.kind == "enter" then self:comments_keypressed(thread, "f1")
+                if result and result.kind == "enter" then self:comments_keypressed(thread, "f1")
                 elseif not input.visible then thread.compose = false end
+                thread.draft = input:apply_edit(thread.draft, result)
             end
             return
         end
@@ -374,6 +373,7 @@ return function(screen)
         thread.scroll = math.max(0, math.min(max_scroll, thread.scroll))
         thread.max_scroll = max_scroll
         thread.hits = {}
+        thread.hit_clip = {x = x + 8, y = viewport_top, w = width - 16, h = viewport}
         local seen = {}
         love.graphics.setScissor(x + 8, viewport_top, width - 16, viewport)
         for _, message in ipairs(thread.messages) do

@@ -173,7 +173,7 @@ function input_handler.keypressed(ms, key)
             return
         end
         if key == "backspace" then
-            ms.edit_input = ui.remove_last_utf8(ms.edit_input)
+            ms:keyboard_backspace()
             return
         end
         return
@@ -190,7 +190,7 @@ function input_handler.keypressed(ms, key)
             ms.search_active = false
             ms:set_search_query("", false)
         elseif key == "backspace" then
-            ms:set_search_query(ui.remove_last_utf8(ms.search_query), false)
+            ms:keyboard_backspace()
         elseif key == "return" or key == "kpenter" then
             ms:submit_search()
         end
@@ -266,7 +266,7 @@ function input_handler.keypressed(ms, key)
     end
 
     if key == "backspace" then
-        ms.model.input = ui.remove_last_utf8(ms.model.input)
+        ms:keyboard_backspace()
         return
     end
 

@@ -77,10 +77,14 @@ def package(version, repository, output, include_app_credentials=False, chat_pre
     tracked = set(subprocess.check_output(index, cwd=ROOT).decode("utf-8").split("\0"))
     deleted = set(subprocess.check_output([*index, "--deleted"], cwd=ROOT).decode("utf-8").split("\0"))
     tracked.difference_update(deleted)
+    wallpaper = "icons/background/wavelenght-tg.png"
     portable_assets = {"icons/app/spgram.png", "icons/app/bouncyarrow.png"}
     portable_assets.update(path.relative_to(ROOT).as_posix() for path in (ROOT / "fonts/retro").glob("*.ttf"))
     portable_assets.update(path.relative_to(ROOT).as_posix() for path in (ROOT / "licenses/retro").glob("*.txt"))
     sources = {APP + path: path for path in ROOT_FILES | portable_assets}
+    if (ROOT / wallpaper).is_file():
+        portable_assets.add(wallpaper)
+        sources[APP + "res/telegram.png"] = wallpaper
     for path in tracked:
         if path.startswith(("src/", "threads/")) and path.endswith(".lua"):
             parts = PurePosixPath(path).parts

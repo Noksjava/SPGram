@@ -28,8 +28,14 @@ local MEMORY_ROWS = {
     small_texture_cache = {"Texture cache", "Small", "Standard"},
 }
 
+local BACKGROUND_MODES = {background_off = "off", background_static = "static", retroscroll = "retroscroll"}
+local BACKGROUND_SECTION = {label = "Backgrounds", items = {"background_off", "background_static", "background_animated"}}
+local ANIMATED_SECTION = {label = "Animated", items = {"retroscroll"}}
+local VISUAL_SUBMENUS = {performance = PERFORMANCE_SECTION, backgrounds = BACKGROUND_SECTION,
+    background_animated = ANIMATED_SECTION}
+
 local SECTIONS = {
-    {id = "visual", label = "Visual settings", items = {"performance", "theme", "fonts", "ui_motion", "startup_intro", "wallpaper", "scale"},
+    {id = "visual", label = "Visual settings", items = {"performance", "theme", "fonts", "ui_motion", "startup_intro", "backgrounds", "scale"},
         icon = {"1111111", "1000001", "1010101", "1001001", "1111111", "0001000", "0011100"}},
     {id = "sounds", label = "Sounds", items = {"message_sound"},
         icon = {"0001000", "0011010", "1111001", "1111001", "1111001", "0011010", "0001000"}},
@@ -75,6 +81,11 @@ ROW_ICONS.profile_pictures = PROFILE_SECTION.icon
 ROW_ICONS.account = PROFILE_SECTION.icon
 ROW_ICONS.font_family = ROW_ICONS.fonts
 ROW_ICONS.autoplay_images = ROW_ICONS.wallpaper
+ROW_ICONS.backgrounds = ROW_ICONS.wallpaper
+ROW_ICONS.background_off = ROW_ICONS.minimize
+ROW_ICONS.background_static = ROW_ICONS.wallpaper
+ROW_ICONS.background_animated = ROW_ICONS.startup_intro
+ROW_ICONS.retroscroll = {"0000011", "0000110", "0011111", "0001100", "0011000", "0110000", "1100000"}
 ROW_ICONS.video_thumbnails = ROW_ICONS.startup_intro
 ROW_ICONS.message_sound = SECTIONS[2].icon
 ROW_ICONS.keyboard_language = SECTIONS[3].icon
@@ -152,7 +163,7 @@ function settings_screen:items()
             if (id ~= "wifi_keep_awake" or self.tg:wifi_power_supported())
                 and (id ~= "wifi_radio" or self.tg:wifi_radio_supported())
                 and (id ~= "calibrate_faces" or self.callbacks.calibrate_faces) then
-                items[#items + 1] = {id = id, section = id == "performance" and PERFORMANCE_SECTION or nil}
+                items[#items + 1] = {id = id, section = VISUAL_SUBMENUS[id]}
             end
         end
         return items
@@ -183,7 +194,8 @@ local ROW_LABELS = {
     keyboard_languages = "Keyboard languages", message_sound = "Message sound", startup_intro = "Startup intro",
     vibration_test = "Vibration test", minimize = "Minimize", wifi_radio = "Wi-Fi radio",
     wifi_keep_awake = "Keep Wi-Fi awake", reconnect = "Reconnect to Telegram", theme = "Theme",
-    wallpaper = "Chat wallpaper", abxy = "Swap Confirm / Back", show_mouse = "Mouse pointer",
+    background_off = "Off", background_static = "Static", retroscroll = "Retroscroll",
+    abxy = "Swap Confirm / Back", show_mouse = "Mouse pointer",
     refresh_messages = "Refresh messages", memory_preset = "Memory preset", frame_rate = "Frame-rate cap", vsync = "VSync",
 }
 
@@ -222,7 +234,9 @@ local function row_content(self, item, active_key)
     if id == "wifi_keep_awake" then return label, self.tg:wifi_power_label() end
     if id == "reconnect" then return label, self.tg:connection_label() end
     if id == "theme" then return label, self.callbacks.get_theme and self.callbacks.get_theme() or "dark" end
-    if id == "wallpaper" then return label, self.callbacks.get_wallpaper and self.callbacks.get_wallpaper() or "off" end
+    if BACKGROUND_MODES[id] then
+        return label, media_settings.chat_background() == BACKGROUND_MODES[id] and "Active" or nil
+    end
     if id == "abxy" then return label, enabled_label(self:abxy_layout() == "retro") end
     if id == "show_mouse" then return label, enabled_label(media_settings.get("show_mouse_cursor")) end
     if id == "logout" and self.logout_confirm then return "Confirm sign-out" end
@@ -477,8 +491,8 @@ function settings_screen:activate_item(item)
         end
     elseif item.id == "message_sound" or item.id == "startup_intro" then
         media_settings.toggle(item.id)
-    elseif item.id == "wallpaper" then
-        if self.callbacks.toggle_wallpaper then self.callbacks.toggle_wallpaper() end
+    elseif BACKGROUND_MODES[item.id] then
+        media_settings.set_chat_background(BACKGROUND_MODES[item.id])
     elseif item.id == "scale" then
         ui.set_scale(self.scale)
     elseif item.id == "frame_rate" then
