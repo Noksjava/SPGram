@@ -20,6 +20,12 @@ jobs:
           version="$(cat VERSION)"
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
             [[ "$GITHUB_REF_NAME" == "v$version" ]]
+            grep -Fq -- "**Alpha · v$version ·" README.md
+            grep -Fq -- "SPgram-PortMaster-v$version.zip" README.md
+            if git ls-files --error-unmatch -- CHANGELOG.md >/dev/null 2>&1; then
+              echo "Keep the changelog outside the source repository." >&2
+              exit 1
+            fi
           fi
           echo "value=$version" >> "$GITHUB_OUTPUT"
       - name: Validate metadata and Lua syntax
