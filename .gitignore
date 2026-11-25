@@ -3,6 +3,7 @@ dist/
 *.zip
 build/
 build-host/
+/CHANGELOG.md
 
 # Local editor / file manager metadata
 .directory
