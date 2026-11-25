@@ -426,13 +426,14 @@ local function reaction_rows_height(rows)
     return #rows > 0 and REACTION_GAP + #rows * 22 or 0
 end
 
-local function draw_reaction_rows(rows, x, y, font, colors, resolve)
+local function draw_reaction_rows(rows, x, y, font, colors, resolve, feedback)
     local chip_height = 20
     for row_index, row in ipairs(rows or {}) do
         local chip_x = x
-        local chip_y = y + (row_index - 1) * 22
         for _, chip in ipairs(row) do
             local reaction = chip.reaction
+            local lift = feedback and reaction.chosen and reaction.emoji == feedback.emoji and feedback.lift or 0
+            local chip_y = y + (row_index - 1) * 22 - lift
             ui.rect(chip_x, chip_y, chip.width, chip_height,
                 reaction.chosen and colors.accent_dark or colors.header, 10)
             if reaction.chosen then

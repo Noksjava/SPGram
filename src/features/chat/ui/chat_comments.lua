@@ -126,6 +126,7 @@ return function(screen)
         end
         local row = thread.rows and thread.rows[message.id]
         self.context_menu = {comment_thread = thread, message = message, items = items, index = 1,
+            receipt_lookup = not primary and self.tg:check_message_options(message) or nil,
             x = x or math.floor(ui.width() * 0.43),
             y = y or (row and 92 + row.y - (thread.scroll or 0) or 92)}
         self.menu_anim = 0
@@ -196,10 +197,7 @@ return function(screen)
         local confirm = key == "return" or key == "kpenter"
         local menu = self.context_menu
         if menu and menu.comment_thread == thread then
-            if key == "escape" or key == "y" then self.context_menu = nil
-            elseif key == "up" or key == "down" then
-                menu.index = math.max(1, math.min(#menu.items, menu.index + (key == "up" and -1 or 1)))
-            elseif confirm then self:activate_comment_option(menu, menu.items[menu.index]) end
+            self:context_keypressed(key)
             return
         end
         local preview = thread.preview
@@ -413,7 +411,7 @@ return function(screen)
                 end
                 if #row.reactions > 0 then
                     helpers.draw_reaction_rows(row.reactions, tx, body_top + #row.lines * line_h + helpers.reaction_gap,
-                        f.tiny, colors, self.custom_emoji_image)
+                        f.tiny, colors, self.custom_emoji_image, self:reaction_feedback_for(message, row.reactions))
                 end
                 local hit_y = math.max(viewport_top, top)
                 thread.hits[#thread.hits + 1] = {message = message, x = x + 12, y = hit_y, w = width - 28,
@@ -489,15 +487,7 @@ return function(screen)
         end
         local menu = self.context_menu
         if menu and menu.comment_thread == thread then
-            if button == 1 then
-                local left, top, width, _, row_h, visible = self:context_menu_bounds(ui.width(), ui.height())
-                local index = math.floor((y - top - 6) / row_h) + 1
-                if x >= left and x < left + width and index >= 1 and index <= visible then
-                    self:activate_comment_option(menu, menu.items[(menu.scroll or 0) + index])
-                    return
-                end
-            end
-            self.context_menu = nil
+            self:context_mousepressed(x, y, button)
             return
         end
         local preview = thread.preview

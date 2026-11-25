@@ -27,7 +27,7 @@ local settings_scale = 0.9
 local settings_open = false
 local settings_slide
 local releases, launch_releases_open
-local SETTINGS_SLIDE_TIME = 0.24
+local SETTINGS_SLIDE_TIME = 0.22
 local controls_return, face_setup_return, profile_return
 
 local handle_key

@@ -115,7 +115,8 @@ return function(messenger_screen)
                     below + (index - 1) * font:getHeight(), font, colors.text, emoji, self.custom_emoji_image)
             end
         end
-        helpers.draw_reaction_rows(reactions, x + padding, below + media.caption_h + helpers.reaction_gap, self.fonts.tiny, colors, self.custom_emoji_image)
+        helpers.draw_reaction_rows(reactions, x + padding, below + media.caption_h + helpers.reaction_gap,
+            self.fonts.tiny, colors, self.custom_emoji_image, self:reaction_feedback_for(first, reactions))
         local comment, count = helpers.album_comment_target(self.model:current_chat(), messages)
         local footer = y + height - (comment and 27 or 0)
         local time = os.date("%H:%M", first.date or 0)
@@ -164,6 +165,17 @@ return function(messenger_screen)
             ui.rect(right - 5, top + 5, 2, 2, colors.red)
         elseif state == "sent" or state == "read" then
             local color = state == "read" and colors.accent or colors.muted
+            local sent = self.tg.delivery_feedback
+            if sent and sent.id == message.id and sent.chat_id == message.chat_id then
+                local lift = ui.focus_lift(love.timer.getTime() - sent.at)
+                if lift > 0 then
+                    top = top - math.floor(lift / 2)
+                    color = colors.accent
+                    ui.rect(right - 2, top - 1, 2, 2, color)
+                    ui.rect(right - 11 - math.floor(lift / 2), top + 2, 2, 2, color)
+                    ui.rect(right - 4, top + 8, 1, 1, color)
+                end
+            end
             local function check(x)
                 ui.rect(x, top + 3, 2, 2, color)
                 ui.rect(x + 2, top + 4, 2, 2, color)
