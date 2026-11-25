@@ -13,6 +13,15 @@ end
 
 local MAIN_LIST = {["@type"] = "chatListMain"}
 local ARCHIVE_LIST = {["@type"] = "chatListArchive"}
+local FORUM_FIRST_PAGE = 12
+local FORUM_NEXT_PAGE = 20
+local FORUM_RETRY_PAGE = 8
+
+local function copy_forum_row(topic)
+    local message_id = topic.last_message and topic.last_message.id
+    return {info = topic.info, is_pinned = topic.is_pinned, unread_count = topic.unread_count,
+        last_read_inbox_message_id = topic.last_read_inbox_message_id, last_message = message_id and {id = message_id}}
+end
 
 local function chat_position(chat, list)
     for _, position in ipairs(chat.positions or {}) do
@@ -285,11 +294,19 @@ return function(telegram)
         if not forum or forum.chat_id ~= chat_id then
             forum = {chat_id = chat_id, topics = {}, by_id = {}, drafts = {}, index = 1}
             self.forum = forum
+            local cached = self.recent_forum_topics
+            if cached and cached.chat_id == chat_id then
+                for i, topic in ipairs(cached.topics) do
+                    local row = copy_forum_row(topic)
+                    forum.topics[i], forum.by_id[row.info.forum_topic_id] = row, row
+                end
+            end
         end
         if refresh then
             forum.topics, forum.by_id, forum.index, forum.first = {}, {}, 1, 1
             forum.date, forum.message_id, forum.topic_id = nil, nil, nil
             forum.loaded, forum.complete = nil, nil
+            forum.token, forum.previous_token, forum.deadline, forum.slow = nil, nil, nil, nil
         end
         forum.active = nil
         self.messages[chat_id], self.history_state[chat_id] = {}, nil
@@ -297,16 +314,41 @@ return function(telegram)
         if not forum.loaded and not forum.token then self:request_forum_topics() end
     end
 
-    function telegram:request_forum_topics()
+    function telegram:request_forum_topics(retry)
         local forum = self.forum
-        if not forum or forum.token or forum.complete then return end
+        if not forum or forum.complete or (forum.token and not retry) then return end
         self.forum_sequence = (self.forum_sequence or 0) + 1
         local token = "forum_topics:" .. self.forum_sequence
-        forum.error, forum.deadline = nil, love.timer.getTime() + 12
-        forum.token = self:send({["@type"] = "getForumTopics", chat_id = forum.chat_id, query = "",
+        local limit = retry and FORUM_RETRY_PAGE or (forum.loaded and FORUM_NEXT_PAGE or FORUM_FIRST_PAGE)
+        local sent = self:send({["@type"] = "getForumTopics", chat_id = forum.chat_id, query = "",
             offset_date = forum.date or 0, offset_message_id = forum.message_id or 0,
-            offset_forum_topic_id = forum.topic_id or 0, limit = 30}, token)
-        if not forum.token then forum.error = "Could not load topics." end
+            offset_forum_topic_id = forum.topic_id or 0, limit = limit}, token)
+        if sent then
+            forum.previous_token, forum.token = forum.token, sent
+            forum.error, forum.slow, forum.retried = nil, nil, retry == true
+            forum.deadline = love.timer.getTime() + (retry and 25 or 12)
+        else
+            forum.deadline = nil
+            if forum.token then forum.slow = true
+            else forum.error = "Could not load topics." end
+        end
+    end
+
+    function telegram:check_forum_topics(now)
+        local forum = self.forum
+        if not forum or forum.active then return end
+        if self.connection_state and self.connection_state ~= "connectionStateReady" then return end
+        if not forum.token then
+            if not forum.error and not forum.complete and forum.loaded
+                and forum.visible and #forum.topics < forum.visible then self:request_forum_topics() end
+            return
+        end
+        if not forum.deadline or now < forum.deadline then return end
+        if not forum.retried then
+            self:request_forum_topics(true)
+        else
+            forum.deadline, forum.slow = nil, true
+        end
     end
 
     function telegram:handle_forum_topics(kind, extra, response)
@@ -315,7 +357,7 @@ return function(telegram)
             local info = response.info
             local chat_id = info and info.chat_id or response.chat_id
             local id = info and info.forum_topic_id or response.forum_topic_id
-            local topic = forum and forum.chat_id == chat_id and forum.by_id[id]
+            local topic = forum and forum.chat_id == chat_id and self:find_forum_topic(forum, id)
             if topic and info then topic.info = info
             elseif topic then
                 topic.is_pinned = response.is_pinned
@@ -328,19 +370,51 @@ return function(telegram)
             return true
         end
         if not extra:match("^forum_topics:%d+$") then return false end
-        if not forum or forum.token ~= extra then return true end
-        forum.token = nil
+        if not forum or (forum.token ~= extra and forum.previous_token ~= extra) then return true end
         if kind ~= "forumTopics" then
-            forum.error = "Could not load topics."
+            if extra == forum.previous_token then
+                forum.previous_token = nil
+            elseif forum.previous_token then
+                forum.token, forum.previous_token = forum.previous_token, nil
+            else
+                forum.token, forum.deadline, forum.slow = nil, nil, nil
+                forum.error = "Could not load topics."
+            end
             return true
+        end
+        forum.token, forum.previous_token, forum.deadline, forum.slow = nil, nil, nil, nil
+        forum.error = nil
+        local first = not forum.loaded
+        local selected = forum.topics[forum.index]
+        local selected_id = selected and selected.info.forum_topic_id
+        if first then
+            forum.topics, forum.by_id, forum.index, forum.first = {}, {}, 1, 1
         end
         forum.loaded = true
         for _, topic in ipairs(response.topics or {}) do
             local id = topic.info and topic.info.forum_topic_id
             if id and not forum.by_id[id] then
-                forum.by_id[id] = topic
-                forum.topics[#forum.topics + 1] = topic
+                local active = forum.active and forum.active.info.forum_topic_id == id and forum.active
+                local row = active or copy_forum_row(topic)
+                row.info, row.is_pinned = topic.info, topic.is_pinned
+                if active and (topic.last_read_inbox_message_id or 0) >= (row.last_read_inbox_message_id or 0) then
+                    row.last_read_inbox_message_id, row.unread_count = topic.last_read_inbox_message_id, topic.unread_count
+                end
+                local last_id = topic.last_message and topic.last_message.id
+                if active and last_id and (not row.last_message or last_id >= row.last_message.id) then
+                    row.last_message = {id = last_id}
+                end
+                forum.by_id[id] = row
+                forum.topics[#forum.topics + 1] = row
+                if first and id == selected_id then forum.index = #forum.topics end
             end
+        end
+        if first then
+            local cached = {chat_id = forum.chat_id, topics = {}}
+            for i = 1, math.min(#forum.topics, FORUM_FIRST_PAGE) do
+                cached.topics[i] = copy_forum_row(forum.topics[i])
+            end
+            self.recent_forum_topics = cached
         end
         local date, message_id, id = response.next_offset_date or 0,
             response.next_offset_message_id or 0, response.next_offset_forum_topic_id or 0
@@ -349,6 +423,11 @@ return function(telegram)
             or #(response.topics or {}) == 0
         forum.date, forum.message_id, forum.topic_id = date, message_id, id
         return true
+    end
+
+    function telegram:find_forum_topic(forum, id)
+        local active = forum.active
+        return active and active.info.forum_topic_id == id and active or forum.by_id[id]
     end
 
     function telegram:forum_message_scope(chat_id)

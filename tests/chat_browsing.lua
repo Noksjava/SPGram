@@ -295,8 +295,9 @@ do
     hold.screen:update_read_jump(now)
     assert(hold.screen:read_jump_progress(now) == 0.5)
     hold.screen:draw_read_jump(600, 400, nil, now, 17)
-    assert(hold.screen.read_jump_hit.h == 53 and scale_x == 22 / 32 and scale_y == 33 / 32)
-    assert(arrow_x ~= 604 or arrow_y ~= 391)
+    assert(hold.screen.read_jump_hit.h == 53 and hold.screen.read_jump_hit.w == 41)
+    assert(scale_x == 33 / 32 and scale_y == scale_x)
+    assert(arrow_x ~= 593 or arrow_y ~= 391)
     local motion = require("src.shared.system.media_settings")
     motion.set("ui_motion", false)
     hold.screen:draw_read_jump(600, 400, nil, now, 17)
@@ -309,7 +310,8 @@ do
     hold.screen:update_read_jump(now)
     assert(hold.tg.history_state[hold.chat_id].jump.newest)
     hold.screen:draw_read_jump(600, 400, nil, now, 17)
-    assert(hold.screen.read_jump_hit.h == 64 and scale_x == 22 / 32 and scale_y == 44 / 32)
+    assert(hold.screen.read_jump_hit.h == 64 and hold.screen.read_jump_hit.w == 52)
+    assert(scale_x == 44 / 32 and scale_y == scale_x and arrow_x == 582)
     love.graphics.draw = noop
     hold.screen:keyreleased("r2")
     hold.answer(0, 0, 10, 20)
@@ -328,22 +330,45 @@ do
     tg:handle({["@type"] = "updateSupergroup", supergroup = {["@type"] = "supergroup", id = 42, is_forum = true}})
     local forum = assert(tg.forum)
     assert(tg.forum_groups[42] and not forum.active and view.requests[#view.requests].object["@type"] == "getForumTopics")
+    local original, count = forum.token, #view.requests
+    now = forum.deadline + 1
+    tg:handle({["@type"] = "updateConnectionState", state = {["@type"] = "connectionStateWaitingForNetwork"}})
+    tg:check_forum_topics(now)
+    assert(forum.token == original and #view.requests == count)
+    tg:handle({["@type"] = "updateConnectionState", state = {["@type"] = "connectionStateReady"}})
+    tg:check_forum_topics(now)
+    assert(forum.token ~= original and forum.previous_token == original and #view.requests == count + 1)
+    assert(view.requests[#view.requests].object.limit == 8)
+    local retry = forum.token
+    now = forum.deadline + 1
+    tg:check_forum_topics(now)
+    assert(forum.slow and forum.token == retry and #view.requests == count + 1)
     local function topic(id, name, closed)
         return {info = {forum_topic_id = id, name = name, is_closed = closed},
             last_read_inbox_message_id = 3 * id_step, unread_count = 2, last_message = view.history[5]}
     end
     local first, second = topic(1, "General"), topic(9, "Hardware", true)
-    tg:handle({["@type"] = "forumTopics", ["@extra"] = forum.token, topics = {first},
+    local late_reply = require("dkjson").encode({["@type"] = "forumTopics", ["@extra"] = original, topics = {first},
         next_offset_date = 50, next_offset_message_id = 3 * id_step, next_offset_forum_topic_id = 1})
+    tg.out_channel = {pop = function() local reply = late_reply; late_reply = nil; return reply end}
+    tg:poll()
+    assert(#forum.topics == 1 and not forum.slow and not forum.token and not forum.error)
+    tg:handle({["@type"] = "forumTopics", ["@extra"] = retry, topics = {second}})
+    assert(#forum.topics == 1 and not forum.complete)
     screen:draw_forum_topics(group, forum, 224, 416, 480)
     screen:keypressed("down")
     assert(view.requests[#view.requests].object.offset_forum_topic_id == 1)
+    now = forum.deadline + 1
+    tg:check_forum_topics(now)
+    local prior = forum.previous_token
+    tg:handle({["@type"] = "error", ["@extra"] = prior, code = 500})
+    assert(#forum.topics == 1 and not forum.error)
     tg:handle({["@type"] = "forumTopics", ["@extra"] = forum.token, topics = {first, second}})
     assert(#forum.topics == 2 and forum.complete)
     screen:keypressed("return")
     local request = view.requests[#view.requests]
     assert(request.object["@type"] == "getForumTopicHistory" and request.object.forum_topic_id == 1)
-    assert(request.object.from_message_id == 3 * id_step)
+    assert(request.object.from_message_id == 3 * id_step and request.object.limit == 24)
     tg:handle({["@type"] = "messages", ["@extra"] = request.extra,
         messages = {view.history[5], view.history[4], view.history[3]}})
     assert(tg.history_state[chat_id].initial_focus_id == view.history[4].id)
@@ -358,13 +383,13 @@ do
     foreign.is_outgoing = true
     foreign.topic_id = {["@type"] = "messageTopicForum", forum_topic_id = 9}
     tg:handle_new_message(foreign)
-    assert(#tg:get_messages(chat_id) == 3 and second.last_message == foreign)
+    assert(#tg:get_messages(chat_id) == 3 and forum.by_id[9].last_message.id == foreign.id)
     screen.model.input = "Saved in General"
     screen:keypressed("escape")
     assert(not forum.active and #tg:get_messages(chat_id) == 0 and #forum.topics == 2)
     screen:keypressed("down")
     screen:keypressed("return")
-    assert(forum.active == second and not screen:can_show_composer(group))
+    assert(forum.active.info.forum_topic_id == 9 and not screen:can_show_composer(group))
     assert(view.requests[#view.requests].object.forum_topic_id == 9)
     tg:handle({["@type"] = "messages", ["@extra"] = request.extra, messages = {view.history[3]}})
     assert(#tg:get_messages(chat_id) == 0)
@@ -376,7 +401,54 @@ do
     screen:keypressed("escape")
     assert(not tg.current_chat_id and not tg.forum)
 end
-print("Forum topics paginate and isolate history, search and sending. R2 holds jump to newest with a capped stretch.")
+print("Forum topics retry after reconnection, accept late worker replies, paginate and isolate history, search and sending.")
+
+do
+    local view = fixture("Busy forum", "chatTypeSupergroup", 0, 12000)
+    local tg, screen, chat_id = view.tg, view.screen, view.chat_id
+    local group = tg.chats_by_id[chat_id]
+    group.type.is_channel, group.type.supergroup_id = false, 243
+    tg:close_chat()
+    tg.forum_groups = {[243] = true}
+    local start = #view.requests
+    tg:open_chat(chat_id)
+    local forum = tg.forum
+    assert(view.requests[start + 1].object["@type"] == "openChat")
+    assert(view.requests[start + 2].object["@type"] == "getForumTopics" and view.requests[start + 2].object.limit == 12)
+    local function topic(id)
+        return {info = {forum_topic_id = id, name = "Topic " .. id}, unread_count = 500,
+            last_message = {id = id * id_step, content = {["@type"] = "messageText", text = {text = "A preview"}}}}
+    end
+    tg:handle({["@type"] = "forumTopics", ["@extra"] = forum.token, total_count = 1000,
+        topics = {topic(1), topic(2)}, next_offset_date = 50, next_offset_forum_topic_id = 2})
+    screen:draw_forum_topics(group, forum, 224, 416, 480)
+    tg:check_forum_topics(now)
+    assert(#forum.topics == 2 and #forum.rows == 2)
+    assert(not forum.topics[1].last_message.content)
+    local next_page = view.requests[#view.requests].object
+    assert(next_page["@type"] == "getForumTopics" and next_page.limit == 20 and next_page.offset_forum_topic_id == 2)
+    local more = {}
+    for id = 3, 22 do more[#more + 1] = topic(id) end
+    tg:handle({["@type"] = "forumTopics", ["@extra"] = forum.token, total_count = 1000,
+        topics = more, next_offset_date = 60, next_offset_forum_topic_id = 22})
+    assert(#forum.topics == 22)
+    for index = start + 1, #view.requests do
+        local request = view.requests[index].object
+        assert(request["@type"] ~= "getForumTopicHistory" and request["@type"] ~= "getChatHistory")
+    end
+    tg:close_chat()
+    tg:open_chat(chat_id)
+    forum = tg.forum
+    assert(#forum.topics == 2 and forum.token and not forum.loaded)
+    screen:keypressed("return")
+    assert(forum.active.info.forum_topic_id == 1)
+    assert(view.requests[#view.requests].object["@type"] == "getForumTopicHistory")
+    local active = forum.active
+    tg:handle({["@type"] = "forumTopics", ["@extra"] = forum.token, total_count = 1000,
+        topics = {topic(2), topic(1)}, next_offset_date = 50, next_offset_forum_topic_id = 1})
+    assert(forum.active == active and forum.by_id[1] == active and forum.index == 2)
+end
+print("A 1,000-topic forum displays short pages without opening topic histories, and its first page is reusable.")
 
 do
     local graphics = love.graphics

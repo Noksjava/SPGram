@@ -400,7 +400,7 @@ function love.load()
         tg.auth_error = reason
     end
 
-    releases = release_screen.new(fonts)
+    releases = release_screen.new(fonts, startup_marker)
     screens = {
         auth = auth_screen.new(fonts, tg, {
             open_face_setup = open_face_setup,
@@ -453,8 +453,10 @@ function love.load()
     end
     current = screens.auth
     current:enter()
-    startup_intro = intro_screen.new(fonts.subtitle, media_settings.get("startup_intro"))
-    if releases and not releases.update_error and media_settings.get("check_updates_on_launch") then
+    if not startup_marker then
+        startup_intro = intro_screen.new(fonts.subtitle, media_settings.get("startup_intro"))
+    end
+    if releases and not startup_marker and not releases.update_error and media_settings.get("check_updates_on_launch") then
         releases:start("check", true)
     end
 end
@@ -659,6 +661,7 @@ function love.update(dt)
     if startup_intro and startup_intro:update(tg, sign_in_only) then startup_intro = nil end
     if releases then
         releases:poll()
+        releases:advance(love.timer.getTime())
         if releases.launch_offer and not startup_intro and not settings_slide
             and media_settings.get("check_updates_on_launch") then
             local chat_list = current == screens.messenger and not tg.current_chat_id
@@ -678,6 +681,10 @@ end
 
 function love.draw()
     local started = performance_trace.clock()
+    if releases and releases:operation_active() and not releases.restarting then
+        releases:draw_operation()
+        return
+    end
     if tg then tg:begin_avatar_frame() end
     if startup_intro then
         startup_intro:draw()
@@ -703,7 +710,9 @@ function love.draw()
         current:draw()
     end
 
-    if love.mouse and media_settings and media_settings.get("show_mouse_cursor") then
+    if releases and releases.restarting then
+        releases:draw_operation()
+    elseif love.mouse and media_settings and media_settings.get("show_mouse_cursor") then
         local mx, my = love.mouse.getPosition()
         love.graphics.setColor(1, 1, 1, 1)
         love.graphics.polygon("fill", mx, my, mx + 12, my + 4, mx + 4, my + 12)
@@ -721,6 +730,10 @@ function love.draw()
 end
 
 handle_key = function(key, from_gamepad)
+    if releases and releases:operation_active() then
+        releases:keypressed(key)
+        return
+    end
     if launch_releases_open then
         if releases:keypressed(key) == "back" then launch_releases_open = false end
         return
@@ -894,6 +907,11 @@ function love.gamepadpressed(_, button)
     end
     if startup_intro then return end
     gamepad_held[button] = true
+    if releases and releases:operation_active() then
+        local key = GAMEPAD_KEYS[button]
+        if key then releases:keypressed(key) end
+        return
+    end
     if gamepad_held[BUTTON_MAPPING.shortcuts] and gamepad_held[SELECT_BUTTON] then
         love.event.quit()
         return
@@ -939,12 +957,14 @@ function love.gamepadaxis(_, axis, value)
 end
 
 function love.textinput(text)
+    if releases and releases:operation_active() then return end
     if launch_releases_open then return end
     if startup_intro then return end
     if current.textinput then current:textinput(text) end
 end
 
 function love.wheelmoved(x, y)
+    if releases and releases:operation_active() then return end
     if launch_releases_open then return end
     if startup_intro then return end
     if settings_slide and current == screens.settings then return end
@@ -952,6 +972,7 @@ function love.wheelmoved(x, y)
 end
 
 function love.mousepressed(x, y, button)
+    if releases and releases:operation_active() then return end
     if launch_releases_open then return end
     if startup_intro then return end
     if settings_slide and current == screens.settings then return end
@@ -978,7 +999,9 @@ function love.quit()
     if tg then
         local stopped = tg:shutdown()
         if not stopped then
-            if releases and (launch_releases_open or (current and current.release_open)) then
+            if releases and releases.install_code then
+                releases:shutdown_delayed()
+            elseif releases and (launch_releases_open or (current and current.release_open)) then
                 releases.status = "TDLib is still closing. Try again in a moment."
             end
             return true

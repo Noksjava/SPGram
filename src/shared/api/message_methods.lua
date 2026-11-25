@@ -442,16 +442,14 @@ return function(telegram)
             end
         end
         local chat = self:history_chat(chat_id)
+        local kind = chat and chat.type
+        local is_forum = kind and self.forum_groups and self.forum_groups[kind.supergroup_id]
         self:send({["@type"] = "openChat", chat_id = chat_id})
+        if is_forum then self:show_forum_topics(chat_id) end
         self:request_chat_send_access(chat)
         self:request_channel_sponsors(chat, love.timer.getTime())
         self:send({["@type"] = "getChat", chat_id = chat_id}, "getChat:" .. tostring(chat_id))
-        local kind = chat and chat.type
-        if kind and self.forum_groups and self.forum_groups[kind.supergroup_id] then
-            self:show_forum_topics(chat_id)
-        else
-            self:initialize_history(chat_id, history_loaded)
-        end
+        if not is_forum then self:initialize_history(chat_id, history_loaded) end
     end
 
     function telegram:open_forum_topic(topic)
@@ -533,7 +531,9 @@ return function(telegram)
         state.loading, state.error, state.direction = true, nil, direction
         state.retry_on_reconnect, state.network_retry = nil, nil
         state.history_deadline = love.timer.getTime() + 12
-        self:send(self:history_request(chat_id, message_id, offset), state.token)
+        local request = self:history_request(chat_id, message_id, offset)
+        if direction == "initial" and request["@type"] == "getForumTopicHistory" then request.limit = 24 end
+        self:send(request, state.token)
         return true
     end
 
@@ -1149,9 +1149,9 @@ return function(telegram)
         local forum = self.forum
         local scoped = forum and forum.chat_id == message.chat_id
         local topic_id = message.topic_id and message.topic_id.forum_topic_id
-        local topic = scoped and topic_id and forum.by_id[topic_id]
+        local topic = scoped and topic_id and self:find_forum_topic(forum, topic_id)
         if topic and (not topic.last_message or message.id > topic.last_message.id) then
-            topic.last_message = message
+            topic.last_message = {id = message.id}
             if not message.is_outgoing and message.id > (topic.last_read_inbox_message_id or 0) then
                 topic.unread_count = (topic.unread_count or 0) + 1
             end

@@ -464,7 +464,7 @@ love.filesystem.write = function(name, data)
 end
 local keyboard = require("src.shared.ui.virtual_keyboard")
 local preferences = require("src.shared.system.keyboard_languages")
-local menu = require("src.features.auth.ui.settings_screen").new({normal = font, small = font, tiny = font}, tg, {})
+local menu = require("src.features.auth.ui.settings_screen").new({normal = font, small = font, tiny = font, subtitle = font}, tg, {})
 menu:activate_item({id = "keyboard_languages"})
 assert(menu.languages_open and #menu:items() == 6)
 for _, option in ipairs(menu:items()) do
@@ -580,6 +580,65 @@ assert(preferences.toggle("zh"))
 assert(preferences.current() == "en")
 control("lang")
 assert(not typed.language_menu and typed.visible)
+
+do
+    local function open_item(id)
+        for _, item in ipairs(menu:items()) do
+            if id == item.id then menu:activate_item(item); return end
+        end
+        error(id .. " was missing")
+    end
+    menu:enter()
+    open_item("visual")
+    open_item("backgrounds")
+    assert(menu.section.icon)
+    menu:draw()
+    assert(drawn.Backgrounds and drawn.Static)
+    open_item("background_animated")
+    assert(menu.section.icon)
+    menu:draw()
+    assert(drawn.Animated and drawn.Retroscroll)
+end
+
+do
+    local Release = require("src.features.auth.ui.release_screen")
+    local clock, previous_event = love.timer.getTime, love.event
+    local now, quits = 10, {}
+    love.timer.getTime = function() return now end
+    love.event = {quit = function(code) quits[#quits + 1] = code end}
+    local release = setmetatable({fonts = menu.fonts, verified = true, selection = 2, version = "0.2.70"}, Release)
+    release:keypressed("return")
+    assert(release:operation_active() and #quits == 0)
+    release:advance(now + 5)
+    assert(#quits == 0)
+    release:draw_operation()
+    assert(drawn["Updating SPgram…"] and drawn["Hang on. SPgram will restart automatically."])
+    release:advance(10.4)
+    assert(#quits == 0)
+    release:advance(10.5)
+    release:advance(10.6)
+    assert(#quits == 1 and quits[1] == 41)
+    release:shutdown_delayed()
+    assert(not release:operation_active() and release.verified)
+    release.rollback_open, release.rollback_versions, release.rollback_ready, release.selection = true, {"0.2.69"}, "0.2.69", 1
+    release:keypressed("return")
+    release:draw_operation()
+    release:advance(10.5)
+    assert(quits[2] == 43 and drawn["Restoring previous version…"])
+    release:shutdown_delayed()
+    release.thread, release.downloading, release.progress = {}, true, 62
+    release:draw_operation()
+    assert(drawn["Downloading release…"] and drawn["62%"])
+    release.progress = 100
+    release:draw_operation()
+    assert(drawn["Verifying release…"])
+    release.thread, release.restarting = nil, true
+    release:draw_operation()
+    assert(drawn["Starting SPgram…"])
+    release:advance(11)
+    assert(not release:operation_active())
+    love.timer.getTime, love.event = clock, previous_event
+end
 
 menu:enter()
 assert(menu:items()[menu.selected_item].id == "my_profile")

@@ -75,7 +75,7 @@ function telegram.new()
     self.archive_load_error = nil
     self.pending_archive_changes = {}
     self.send_user_access, self.send_group_status = {}, {basicGroup = {}, supergroup = {}}
-    self.forum, self.forum_groups = nil, {}
+    self.forum, self.forum_groups, self.recent_forum_topics = nil, {}, nil
     self.scope_notification_settings = {}
     self.profile_media = {}
     self.profile_details = {}
@@ -317,7 +317,7 @@ function telegram:reset_account_state()
     self.archive_load_error = nil
     self.pending_archive_changes = {}
     self.send_user_access, self.send_group_status = {}, {basicGroup = {}, supergroup = {}}
-    self.forum, self.forum_groups = nil, {}
+    self.forum, self.forum_groups, self.recent_forum_topics = nil, {}, nil
     self.scope_notification_settings = {}
     self.profile_media = {}
     self.profile_details = {}
@@ -531,6 +531,7 @@ function telegram:update(dt)
     self:poll_network(now, os.time())
     self:poll_wifi_power()
     self:check_history_timeout(now)
+    self:check_forum_topics(now)
     local receipts = self.message_receipt_lookup
     if receipts and receipts.deadline and now >= receipts.deadline then
         receipts.status, receipts.deadline, receipts.token = "Could not load read receipts. Try again.", nil, nil

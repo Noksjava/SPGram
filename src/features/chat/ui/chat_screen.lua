@@ -321,10 +321,6 @@ function messenger_screen:update(dt)
     local now = love.timer.getTime()
     self:update_delete_effect(now)
     self:update_read_jump(now)
-    local forum = self.tg.forum
-    if forum and forum.token and now >= forum.deadline then
-        forum.token, forum.error = nil, "Loading topics timed out."
-    end
     if self.fullscreen_media then
         local pan_x = self.fullscreen_pan_x or 0
         local pan_y = self.fullscreen_pan_y or 0
@@ -617,7 +613,8 @@ function messenger_screen:draw()
     local hint
     local back_target = forum and "   {back} — Topics" or "   {back} — Chats"
     if forum and not forum.active then
-        hint = "↑↓ — Topics   {confirm} — Open   {options} — Refresh   {back} — Chats"
+        local action = (forum.slow or forum.error) and "Retry" or "Refresh"
+        hint = "↑↓ — Topics   {confirm} — Open   {options} — " .. action .. "   {back} — Chats"
     elseif self.header_focus and not self.search_active and not self.forward_mode then
         local action = self.header_focus == "settings" and "Settings" or "My profile"
         hint = "←/→ — Switch   {confirm} — " .. action .. "   ↓ — Return"
@@ -2475,7 +2472,10 @@ function messenger_screen:draw_forum_topics(chat, forum, x, width, height, backg
         forum.rows[#forum.rows + 1] = {x = row_x, y = y, w = row_w, h = row_h, index = i}
         y = y + row_h + 4
     end
-    local status = forum.token and "Loading topics…" or forum.error
+    local connection = self.tg.connection_state
+    local status = forum.token and connection and connection ~= "connectionStateReady" and "Waiting for Telegram to connect…"
+        or forum.slow and "Telegram is taking longer than usual."
+        or forum.token and "Loading topics…" or forum.error
         or (#forum.topics == 0 and "No topics found." or not forum.complete and "Scroll for more topics")
     if status then ui.text(status, x + 18, y + 2, f.tiny, forum.error and colors.red or colors.muted) end
 end
@@ -2954,21 +2954,23 @@ function messenger_screen:draw_read_jump(x, y, state, now, unread)
     local w, h = 30, 42
     local progress = self:read_jump_progress(now)
     local motion = media_settings.get("ui_motion")
-    local stretch = motion and progress * progress * (3 - 2 * progress) or 0
-    local extend = math.floor(22 * stretch + 0.5)
-    self.read_jump_hit = {x = x, y = y - extend, w = w, h = h + extend}
+    local growth = motion and progress * progress * (3 - 2 * progress) or 0
+    local extra = math.floor(22 * growth + 0.5)
+    local size = 22 + extra
+    local left = x - extra
+    self.read_jump_hit = {x = left, y = y - extra, w = w + extra, h = h + extra}
     local loading = state and state.jump
     local failed = state and state.jump_error
     local has_unread = unread > 0
     local ink = has_unread and colors.accent or colors.muted
-    ui.retro_panel(x, y - extend, w, h + extend, colors.header,
+    ui.retro_panel(left, y - extra, w + extra, h + extra, colors.header,
         failed and colors.red or (progress > 0 and colors.accent or has_unread and colors.accent_dark or colors.panel_alt))
-    local badge_top = y - extend
+    local badge_top = y - extra
     if has_unread then
         local label = tostring(unread)
         local badge_w = math.max(21, font:getWidth(label) + 10)
         local badge_h = font:getHeight() + 5
-        local badge_x = x + math.min(w - badge_w, math.floor((w - badge_w) / 2))
+        local badge_x = left + math.floor((w + extra - badge_w) / 2)
         badge_top = badge_top - badge_h - 5
         ui.outline(badge_x - 2, badge_top - 2, badge_w + 4, badge_h + 4, alpha_color(ink, 0.22), 5)
         ui.outline(badge_x - 1, badge_top - 1, badge_w + 2, badge_h + 2, alpha_color(ink, 0.5), 4)
@@ -3001,14 +3003,15 @@ function messenger_screen:draw_read_jump(x, y, state, now, unread)
             shake = math.floor(math.sin(32 * elapsed + 4 * elapsed * elapsed) * 3 * energy + 0.5)
             bounce = math.floor(math.abs(math.sin(10 * elapsed)) * 2 * energy + 0.5)
         end
-        love.graphics.draw(self.latest_arrow, self.latest_frames[variant], x + 4 + shake, y + 2 - extend - bounce,
-            0, 22 / 32, (22 + extend) / 32)
+        love.graphics.draw(self.latest_arrow, self.latest_frames[variant], left + 4 + shake, y + 2 - extra - bounce,
+            0, size / 32, size / 32)
     else
         ui.printf("↓", x, y + 5, w, "center", self.fonts.normal, ink)
     end
-    ui.printf("R2", x, y + 25, w, "center", font, failed and colors.red or (has_unread and colors.text or colors.muted))
+    ui.printf("R2", left, y + 25, w + extra, "center", font,
+        failed and colors.red or (has_unread and colors.text or colors.muted))
     if progress > 0 then
-        ui.rect(x + 2, y + h - 2, math.floor((w - 4) * progress + 0.5), 2, colors.accent, 1)
+        ui.rect(left + 2, y + h - 2, math.floor((w + extra - 4) * progress + 0.5), 2, colors.accent, 1)
     end
     if failed then
         local width = font:getWidth(failed) + 14

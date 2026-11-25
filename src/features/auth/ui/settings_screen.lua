@@ -86,6 +86,8 @@ ROW_ICONS.background_off = ROW_ICONS.minimize
 ROW_ICONS.background_static = ROW_ICONS.wallpaper
 ROW_ICONS.background_animated = ROW_ICONS.startup_intro
 ROW_ICONS.retroscroll = {"0000011", "0000110", "0011111", "0001100", "0011000", "0110000", "1100000"}
+BACKGROUND_SECTION.icon = ROW_ICONS.backgrounds
+ANIMATED_SECTION.icon = ROW_ICONS.background_animated
 ROW_ICONS.video_thumbnails = ROW_ICONS.startup_intro
 ROW_ICONS.message_sound = SECTIONS[2].icon
 ROW_ICONS.keyboard_language = SECTIONS[3].icon
@@ -258,8 +260,9 @@ function settings_screen:draw()
     ui.rect(0, 0, w, 56, colors.header)
     local title = self.fonts_open and "Interface font" or self.languages_open and "Keyboard languages"
         or self.section and self.section.label or "Settings"
-    if self.section then ui.pixel_icon(self.section.icon, 24, 17, colors.accent) end
-    local title_x = self.section and 56 or 24
+    local icon = self.section and self.section.icon
+    if icon then ui.pixel_icon(icon, 24, 17, colors.accent) end
+    local title_x = icon and 56 or 24
     ui.text(ui.fit(title, f.subtitle, w - title_x - 144), title_x, 15, f.subtitle, colors.text)
     ui.button_hint("{back} — Back", w - 140, 18, f.tiny, colors.muted)
 

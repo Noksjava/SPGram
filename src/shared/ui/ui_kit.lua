@@ -328,6 +328,7 @@ function ui.contrasting_text(background)
 end
 
 function ui.pixel_icon(icon, x, y, color)
+    if not icon then return end
     for row, pixels in ipairs(icon) do
         for column = 1, #pixels do
             if pixels:sub(column, column) == "1" then

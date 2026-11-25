@@ -133,11 +133,12 @@ return function(messenger_screen, layout)
         if key == "return" or key == "kpenter" then
             local topic = forum.topics[forum.index]
             if self.tg:open_forum_topic(topic) then self:reset_topic_view(forum.drafts[topic.info.forum_topic_id])
-            else self.tg:request_forum_topics() end
+            else self.tg:request_forum_topics(forum.slow or forum.error ~= nil) end
             return
         end
         if key == "y" or key == "options" then
-            if not forum.token then self.tg:show_forum_topics(forum.chat_id, true) end
+            if forum.slow or forum.error then self.tg:request_forum_topics(true)
+            elseif not forum.token then self.tg:show_forum_topics(forum.chat_id, true) end
             return
         end
         local page = forum.visible or 6

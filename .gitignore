@@ -3,6 +3,7 @@ dist/
 *.zip
 build/
 build-host/
+__pycache__/
 /CHANGELOG.md
 
 # Local editor / file manager metadata
@@ -33,6 +34,3 @@ config/
 # Local planning notes
 plans/
 docs/JOB_SPEC.md
-
-# Rust tool build artifacts
-tools/screen-editor/target/
