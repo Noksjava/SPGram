@@ -1,6 +1,6 @@
 # SPgram
 
-SPgram is an unofficial Telegram client for the G35XX series with PortMaster It uses the Telegram API and connects to your existing Telegram account. Its retro interface is designed for the handheld's 640×480 screen and built-in controls, including an on-screen keyboard for typing and signing in.
+SPgram is an unofficial Telegram client for the G35XX series with PortMaster. It uses the Telegram API and connects to your existing Telegram account. Its retro interface is designed for the handheld's 640×480 screen and built-in controls, including an on-screen keyboard for typing and signing in.
 
 **Alpha · v0.2.68 · RG35XX SP with KNULLI Gladiator II**
 
@@ -65,10 +65,10 @@ After Telegram confirms sign out, SPgram removes that account's local database, 
 | SPgram is missing from Ports | Check that the untouched installer ZIP went into the active storage's `roms/ports/autoinstall/` folder. Launch PortMaster again and refresh the gamelist. |
 | SPgram returns immediately to Ports | Check `telegramsp/conf/launcher.log` in your ports folder. If it reports a missing runtime, open **Options → Runtime Manager** in PortMaster. [PortMaster runtime help](https://portmaster.games/installation/installing-ports/#troubleshooting) |
 | The app asks for API credentials | Confirm you installed the full PortMaster ZIP from the project's release assets. |
-| Telegram stops loading after a Wi-Fi drop | Check KNULLI's network status, then use **Settings → Advanced → Reconnect to Telegram**. |
+| Telegram stops loading after a Wi-Fi drop | Check device's network status, then use **Settings → Advanced → Reconnect to Telegram**. |
 | Sign-in asks for email verification | This alpha supports QR and phone sign-in, including passwords. Email verification in the client is still unsupported. |
 
-When reporting a problem, include the SPgram version, handheld model, KNULLI version, what you pressed, and what happened. Share relevant log lines after removing private account information. [Report an issue](https://github.com/Noksjava/SPGram/issues)
+When reporting a problem, include the SPgram version, handheld model, firmware version, what you pressed, and what happened. Share relevant log lines after removing private account information. [Report an issue](https://github.com/Noksjava/SPGram/issues)
 
 ## Future plans
 

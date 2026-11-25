@@ -2001,6 +2001,9 @@ function messenger_screen:context_menu_items(message)
     if self.tg:receipt_chat(message) then
         items[#items + 1] = {label = "Read receipts", action = "read_receipts"}
     end
+    if self.tg:receipt_chat(message) then
+        items[#items + 1] = {label = "Read receipts", action = "read_receipts"}
+    end
     return items
 end
 
