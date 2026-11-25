@@ -120,8 +120,8 @@ return function(messenger_screen)
         local footer = y + height - (comment and 27 or 0)
         local time = os.date("%H:%M", first.date or 0)
         local tiny = self.fonts.tiny
-        ui.text(time, x + bubble_w - padding - tiny:getWidth(time),
-            footer - padding - tiny:getHeight(), tiny, colors.muted)
+        self:draw_message_timestamp(messages[#messages], time, x + bubble_w - padding,
+            footer - padding - tiny:getHeight())
         if comment then self:draw_comment_link(comment, count, x + padding, footer, bubble_w - padding * 2) end
         local hit = {message = first, x = x, y = y, w = bubble_w, h = height}
         self.message_hits[#self.message_hits + 1] = hit
@@ -148,6 +148,30 @@ return function(messenger_screen)
             return string.format("%.1f MB", bytes / (1024 * 1024))
         end
         return string.format("%.0f KB", bytes / 1024)
+    end
+
+    function messenger_screen:draw_message_timestamp(message, time, right, y)
+        local font, colors = self.fonts.tiny, ui.colors
+        local state = self.tg:message_delivery(message)
+        local width = state == "read" and 15 or state and 11 or 0
+        ui.text(time, right - width - font:getWidth(time), y, font, colors.muted)
+        local top = y + math.floor((font:getHeight() - 6) / 2)
+        if state == "pending" then
+            ui.rect(right - 7, top, 1, 6, colors.muted)
+            ui.rect(right - 7, top + 5, 4, 1, colors.muted)
+        elseif state == "failed" then
+            ui.rect(right - 5, top, 2, 4, colors.red)
+            ui.rect(right - 5, top + 5, 2, 2, colors.red)
+        elseif state == "sent" or state == "read" then
+            local color = state == "read" and colors.accent or colors.muted
+            local function check(x)
+                ui.rect(x, top + 3, 2, 2, color)
+                ui.rect(x + 2, top + 4, 2, 2, color)
+                for offset = 0, 3 do ui.rect(x + 3 + offset, top + 3 - offset, 2, 2, color) end
+            end
+            check(right - 8)
+            if state == "read" then check(right - 12) end
+        end
     end
 
     function messenger_screen:photo_geometry(message, max_bubble, padding, measure)

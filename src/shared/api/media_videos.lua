@@ -230,7 +230,7 @@ return function(telegram)
         if not entry then return end
         self.active_video = nil
         self.now_playing = nil
-        entry.storage[entry.file_id] = nil
+        if entry.storage then entry.storage[entry.file_id] = nil end
         if entry.video then
             entry.video:pause()
             entry.video:release()
@@ -242,7 +242,7 @@ return function(telegram)
             return
         end
         if entry.name then love.filesystem.remove(entry.name) end
-        if entry.requested or entry.source_path then
+        if entry.kind ~= "gif" and (entry.requested or entry.source_path) then
             self:collect_video_source(math.huge)
             entry.cleanup_at = love.timer.getTime() + 0.8
             self.retired_video = entry
@@ -250,6 +250,7 @@ return function(telegram)
     end
 
     function telegram:delete_video_source(entry)
+        if entry.kind == "gif" then return end
         local active = self.active_video
         if active and active.file_id == entry.file_id then return end
         self:send({["@type"] = "cancelDownloadFile", file_id = entry.file_id, only_if_pending = false})
@@ -293,7 +294,7 @@ return function(telegram)
         local file = io.open(path, "rb")
         local size = file and file:seek("end") or 0
         if file then file:close() end
-        if size == 0 and not entry.retried_source then
+        if size == 0 and not entry.retried_source and entry.kind ~= "gif" then
             entry.retried_source, entry.source_path = true, nil
             self:download_video(entry)
             return
@@ -308,7 +309,7 @@ return function(telegram)
         entry.progress_path = output .. ".progress"
         entry.status = "decoding"
         self.video_conversion = entry
-        self:submit_media_job({type = "convert_video", path = path, name = entry.name,
+        self:submit_media_job({type = "convert_video", path = path, name = entry.name, animation = entry.kind == "gif",
             output = output}, true)
     end
 
@@ -348,7 +349,7 @@ return function(telegram)
             end
             return
         end
-        if result.ok then
+        if result.ok and entry.kind ~= "gif" then
             self:poll_video_progress(math.huge)
             if (entry.converted_frames or 0) > 0 then
                 entry.duration = entry.converted_frames / 15
@@ -358,7 +359,7 @@ return function(telegram)
         end
         remove_video_signals(result.name)
         if result.ok then
-            local ok, video = pcall(love.graphics.newVideo, result.name)
+            local ok, video = pcall(love.graphics.newVideo, result.name, {audio = entry.kind ~= "gif"})
             if ok then
                 entry.video, entry.status = video, "ready"
                 if entry.autoplay then video:play() end
@@ -367,6 +368,29 @@ return function(telegram)
         end
         entry.status = "error"
         entry.decode_error = result.error or "Could not open the converted video."
+    end
+
+    function telegram:open_fullscreen_animation(message)
+        local file = self:choose_animation_size(message)
+        if not file or not message.id then return end
+        self:release_video()
+        self.manual_animation_entry = nil
+        self.active_video = {kind = "gif", file_id = file.id, duration = 0, status = "downloading", autoplay = true}
+        self:ensure_animation(message, true, true)
+    end
+
+    function telegram:poll_fullscreen_animation()
+        local active = self.active_video
+        if not active or active.kind ~= "gif" then return end
+        local entry = self.animations[active.file_id]
+        if active.video then
+            if not active.video:isPlaying() then
+                active.video:rewind()
+                active.video:play()
+            end
+        elseif active.status == "downloading" and entry and entry.source_path then
+            self:load_video(active.file_id, entry.source_path)
+        end
     end
 
     function telegram:load_animation_preview(file_id, path)
@@ -395,13 +419,19 @@ return function(telegram)
         local file_id = animation.id
         if message.id then self.animation_by_message[self:media_message_key(message)] = file_id end
         local entry = self:animation_thumbnail(message.content.animation)
-        if explicit then self.manual_animation_entry = entry end
+        local stream = explicit and self.active_video and self.active_video.kind == "gif" and self.active_video.file_id == file_id
+        if explicit and not stream then self.manual_animation_entry = entry end
         entry.last_visible = love.timer.getTime()
         if not explicit and not preferences.get("inline_animation") then return entry end
         if retry and entry.status == "error" then
             entry.status, entry.decode_error, entry.autoplay = "remote", nil, true
         end
-        if entry.status == "error" or entry.frames or entry.decode_requested or entry.download_requested then return entry end
+        if entry.status == "error" then return entry end
+        if entry.download_requested then
+            if stream and entry.download_priority ~= 32 then self:download_animation(file_id, entry, 32) end
+            return entry
+        end
+        if not stream and (entry.frames or entry.decode_requested) then return entry end
         if file_size(animation) > ANIMATION_BYTES then
             entry.status, entry.decode_error = "error", "This GIF exceeds the 16 MB animation limit."
             return entry
@@ -411,17 +441,18 @@ return function(telegram)
             entry.source_path = local_file.path
         end
         if entry.source_path then
-            self:queue_media_decode("animation", file_id, entry.source_path)
+            if not stream then self:queue_media_decode("animation", file_id, entry.source_path) end
         else
-            self:download_animation(file_id, entry)
+            self:download_animation(file_id, entry, stream and 32 or 2)
         end
         return entry
     end
 
-    function telegram:download_animation(file_id, entry)
+    function telegram:download_animation(file_id, entry, priority)
         entry.status = "downloading"
+        entry.download_priority = priority
         entry.download_requested = self:send({
-            ["@type"] = "downloadFile", file_id = file_id, priority = 2,
+            ["@type"] = "downloadFile", file_id = file_id, priority = priority,
             offset = 0, limit = ANIMATION_BYTES + 1, synchronous = false,
         }, "animation:" .. tostring(file_id))
     end
@@ -445,7 +476,9 @@ return function(telegram)
         if local_file.is_downloading_completed and local_file.path and local_file.path ~= "" then
             entry.download_requested = nil
             entry.source_path = local_file.path
-            if self.manual_animation_entry == entry
+            if self.active_video and self.active_video.kind == "gif" and self.active_video.file_id == file.id then
+                self:poll_fullscreen_animation()
+            elseif self.manual_animation_entry == entry
                 or (preferences.get("inline_animation") and entry.last_visible and love.timer.getTime() - entry.last_visible < 1) then
                 self:queue_media_decode("animation", file.id, local_file.path)
             elseif entry.status == "downloading" then

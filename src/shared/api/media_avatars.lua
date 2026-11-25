@@ -1,6 +1,40 @@
 local preferences = require("src.shared.system.media_settings")
 
 return function(telegram)
+    function telegram:close_profile_photo()
+        local entry = self.profile_photo
+        if entry and entry.image then entry.image:release() end
+        self.profile_photo = nil
+    end
+
+    function telegram:handle_profile_photo(file)
+        local entry = self.profile_photo
+        if not entry or entry.status ~= "loading" then return end
+        local data = file["local"] or {}
+        if math.max(file.size or 0, file.expected_size or 0, data.downloaded_size or 0) > 8 * 1024 * 1024 then
+            entry.status = "error"
+            self:send({["@type"] = "cancelDownloadFile", file_id = entry.id, only_if_pending = false})
+        elseif data.is_downloading_completed and data.path and data.path ~= "" then
+            self:load_image(entry.id, data.path, {[entry.id] = entry}, 8 * 1024 * 1024, 1280)
+        elseif data.can_be_downloaded == false and not data.is_downloading_active then
+            entry.status = "error"
+        end
+    end
+
+    function telegram:open_profile_photo(file)
+        self:close_profile_photo()
+        self.profile_photo_generation = (self.profile_photo_generation or 0) + 1
+        local token = "profile_photo:" .. tostring(self.profile_photo_generation)
+        local entry = {id = file.id, status = "loading", token = token}
+        self.profile_photo = entry
+        self:handle_profile_photo(file)
+        if entry.status == "loading" then
+            self:send({["@type"] = "downloadFile", file_id = file.id, priority = 32, offset = 0,
+                limit = 8 * 1024 * 1024 + 1, synchronous = false}, token)
+        end
+        return entry
+    end
+
     local function touch(self, entry)
         self.avatar_access = (self.avatar_access or 0) + 1
         entry.last_used = self.avatar_access

@@ -1404,3 +1404,115 @@ do
     end
 end
 print("Photo, sticker and GIF layout stays fixed as textures and progress arrive")
+
+do
+    local sent
+    tg.send = function(_, request, token) sent = request; return token end
+    tg.comments_thread, screen.text_preview, screen.context_menu = nil, nil, nil
+    tg.chats_by_id[42], tg.me = chat, {id = 1}
+    chat.type = {["@type"] = "chatTypePrivate", user_id = 7}
+    tg.users[7] = {first_name = "Mika", last_name = "Chen"}
+    local outgoing = {id = 1400, chat_id = 42, is_outgoing = true, content = {
+        ["@type"] = "messageText", text = {text = "Can you read this?"}}}
+    chat.last_read_outbox_message_id = 1399
+    assert(tg:message_delivery(outgoing) == "sent")
+    tg:handle({["@type"] = "updateChatReadOutbox", chat_id = 42, last_read_outbox_message_id = 1400})
+    assert(tg:message_delivery(outgoing) == "read")
+    outgoing.sending_state = {["@type"] = "messageSendingStatePending"}
+    assert(tg:message_delivery(outgoing) == "pending" and not tg:receipt_chat(outgoing))
+    outgoing.sending_state = nil
+    assert(screen:read_message(outgoing))
+    local reader = screen.text_preview
+    screen:keypressed("y")
+    assert(screen.context_menu.items[1].action == "read_receipts")
+    screen:keypressed("return")
+    local lookup = screen.text_preview.receipts
+    assert(sent["@type"] == "getMessageProperties")
+    tg:handle({["@type"] = "messageProperties", ["@extra"] = lookup.token, can_get_read_date = true})
+    assert(sent["@type"] == "getMessageReadDate")
+    tg:handle({["@type"] = "messageReadDateRead", ["@extra"] = lookup.token, read_date = 1700000000})
+    screen:draw_text_preview(640, 480)
+    assert(screen.text_preview.message_text:find("Mika Chen", 1, true))
+    assert(screen.text_preview.message_text:find(os.date("%Y-%m-%d %H:%M", 1700000000), 1, true))
+    screen:keypressed("escape")
+    assert(screen.text_preview == reader and not tg.message_receipt_lookup)
+
+    chat.type = {["@type"] = "chatTypeBasicGroup"}
+    lookup = tg:request_message_receipts(outgoing)
+    tg:handle({["@type"] = "messageProperties", ["@extra"] = lookup.token, can_get_viewers = true})
+    assert(sent["@type"] == "getMessageViewers")
+    local stale = lookup.token
+    lookup = tg:request_message_receipts(outgoing)
+    tg:handle({["@type"] = "messageViewers", ["@extra"] = stale, viewers = {{user_id = 7, view_date = 1700000001}}})
+    assert(not lookup.viewers)
+    tg:handle({["@type"] = "messageProperties", ["@extra"] = lookup.token, can_get_viewers = true})
+    tg:handle({["@type"] = "messageViewers", ["@extra"] = lookup.token, viewers = {{user_id = 7, view_date = 1700000001}}})
+    assert(lookup.viewers[1].view_date == 1700000001)
+    chat.type = {["@type"] = "chatTypePrivate", user_id = 7}
+    lookup = tg:request_message_receipts(outgoing)
+    tg:handle({["@type"] = "messageProperties", ["@extra"] = lookup.token, can_get_read_date = true})
+    tg:handle({["@type"] = "messageReadDateUserPrivacyRestricted", ["@extra"] = lookup.token})
+    assert(lookup.status:find("privacy") and not lookup.viewers)
+    chat.type = {["@type"] = "chatTypeSupergroup", is_channel = true}
+    assert(not tg:receipt_chat(outgoing) and not tg:message_delivery(outgoing))
+end
+print("Outgoing marks, reader navigation, private and group receipts, and privacy boundaries passed")
+
+do
+    local Profile = require("src.features.auth.ui.profile_screen")
+    local requests = {}
+    local channel = {id = -22, title = "Retro News", type = {["@type"] = "chatTypeSupergroup", is_channel = true,
+        supergroup_id = 22}, photo = {small = {id = 81}, big = {id = 82}}}
+    local released = false
+    local api = setmetatable({
+        chats_by_id = {[-22] = channel}, archive_chats_by_id = {}, profile_details = {},
+        users = {[7] = {id = 7, first_name = "Mika", profile_photo = {small = {id = 51}, big = {id = 52}}}},
+        ensure_user = noop, user_photo_image = noop, chat_photo_image = noop,
+        load_image = function(_, id, _, storage)
+            storage[id].image = {release = function() released = true end}
+            storage[id].status = "ready"
+        end,
+        send = function(_, request, token) requests[#requests + 1] = request; return token end,
+    }, {__index = client})
+    local profile = Profile.new(screen.fonts, api)
+    profile.chat_id = channel.id
+    profile:enter()
+    api:handle({["@type"] = "supergroup", ["@extra"] = "profile_handle:-22",
+        usernames = {active_usernames = {"retronews"}}})
+    api:handle({["@type"] = "supergroupFullInfo", ["@extra"] = "profile_details:-22", description = "Retro news"})
+    profile:update()
+    assert(profile.peer_kind == "Channel" and profile.username == "retronews")
+    assert(profile:actions()[1].label == "View channel posts")
+    profile:keypressed("return")
+    assert(profile.open_chat_id == channel.id and profile:full_photo_file().id == 82)
+
+    profile.chat_id, profile.user_id = nil, 7
+    profile:enter()
+    assert(requests[#requests]["@type"] == "getUserFullInfo")
+    api:handle({["@type"] = "userFullInfo", ["@extra"] = "profile_user:7",
+        photo = {sizes = {{width = 640, height = 640, photo = {id = 54}},
+            {width = 1280, height = 1280, photo = {id = 55}}}}})
+    local actions = profile:actions()
+    assert(actions[1].label == "Message" and actions[2].label == "View profile picture" and actions[3].label == "Block user")
+    profile:keypressed("return")
+    assert(requests[#requests]["@type"] == "createPrivateChat" and requests[#requests].user_id == 7)
+    profile:keypressed("down")
+    profile:keypressed("return")
+    assert(requests[#requests].file_id == 55 and profile.photo_view.status == "loading")
+    api:handle_file({id = 55, ["@extra"] = profile.photo_view.token,
+        ["local"] = {is_downloading_completed = true, path = "fixture.jpg"}})
+    profile:keypressed("return")
+    assert(profile.photo_zoom)
+    profile:keypressed("escape")
+    assert(released and not profile.photo_view)
+    profile:keypressed("down")
+    profile:keypressed("return")
+    assert(profile.block_confirm and not api.profile_user.pending)
+    profile:keypressed("return")
+    local block = requests[#requests]
+    assert(block["@type"] == "setMessageSenderBlockList" and block.sender_id.user_id == 7)
+    assert(block.block_list["@type"] == "blockListMain")
+    api:handle({["@type"] = "ok", ["@extra"] = "profile_block:7"})
+    assert(profile:actions()[3].label == "Unblock user")
+end
+print("Channel identity, post navigation, full-size profile photos, private messages and block confirmation passed")

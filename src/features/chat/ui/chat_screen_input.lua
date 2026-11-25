@@ -446,6 +446,7 @@ return function(messenger_screen, layout)
         if self.keyboard then self.keyboard.visible = false end
         self.text_preview = {message_text = caption and caption.text or "", entities = caption and caption.entities,
             author_message = first, post_message = is_post and first or nil, scroll = 0, album = album, album_index = index,
+            receipt_message = selected,
             photo = {message = selected},
             comment = helpers.album_comment_target(self.model:current_chat(), album),
             reply_message = helpers.album_reply(self.tg, album)}
@@ -736,7 +737,7 @@ return function(messenger_screen, layout)
         if not self:can_open_media(message) then return end
         if kind == "animation" then
 
-            self.tg:ensure_animation(message, true, true)
+            self.tg:open_fullscreen_animation(message)
         elseif kind == "sticker" then
             self.tg:ensure_sticker(message)
             self.tg:ensure_animated_sticker(message, true)
@@ -911,7 +912,15 @@ return function(messenger_screen, layout)
             self.context_menu = nil
             return
         end
-        if item.action == "open_comments" then
+        if item.action == "read_receipts" then
+            local lookup = self.tg:request_message_receipts(cm.message)
+            if not lookup then return end
+            local preview = {title = "Read receipts", receipts = lookup, return_preview = cm.reader, scroll = 0}
+            if cm.receipt_thread then cm.receipt_thread.preview = preview
+            else self.text_preview = preview end
+        elseif item.action == "reader_links" then
+            self:focus_reader_link(cm.reader, 1)
+        elseif item.action == "open_comments" then
             self:open_post_comments(item.message)
         elseif item.action == "read_message" then
             local album = self.nav_albums and self.nav_albums[cm.message.id]
@@ -1025,7 +1034,53 @@ return function(messenger_screen, layout)
         end
     end
 
+    function messenger_screen:context_keypressed(key)
+        local cm = self.context_menu
+        local count = #(cm.items or {})
+        if key == "up" then
+            cm.index = math.max(1, (cm.index or 1) - 1)
+            cm.scroll = cm.scroll or 0
+            if cm.index <= cm.scroll then cm.scroll = cm.index - 1 end
+        elseif key == "down" then
+            cm.index = math.min(count, (cm.index or 1) + 1)
+            cm.scroll = cm.scroll or 0
+            local _, _, _, _, _, max_visible = self:context_menu_bounds(ui.width(), ui.height())
+            if cm.index > cm.scroll + max_visible then cm.scroll = cm.index - max_visible end
+        elseif key == "return" or key == "kpenter" then
+            local item = cm.items and cm.items[cm.index or 1]
+            self.context_menu = nil
+            self:activate_context_item(cm, item)
+        elseif key == "escape" or key == "b" or key == "y" or key == "backspace" or key == "menu" then
+            self.context_menu = nil
+        end
+    end
+
+    function messenger_screen:open_reader_options(preview, thread)
+        local message = preview.receipt_message or preview.author_message
+        if not self.tg:receipt_chat(message) then return false end
+        local items = {{action = "read_receipts", label = "Read receipts"}}
+        if preview.link_rows then items[#items + 1] = {action = "reader_links", label = "Select a link"} end
+        self.context_menu = {reader = preview, receipt_thread = thread, message = message,
+            items = items, index = 1, x = (ui.width() - 240) / 2, y = 64}
+        self.menu_anim = 0
+        return true
+    end
+
+    function messenger_screen:close_receipts(preview, thread)
+        self.tg.message_receipt_lookup = nil
+        if thread then thread.preview = preview.return_preview
+        else self.text_preview = preview.return_preview end
+    end
+
     function messenger_screen:keypressed(key)
+        local thread = self.tg.comments_thread
+        local reader = thread and thread.preview or not thread and self.text_preview
+        if reader and not self.fullscreen_media then
+            if self.context_menu and self.context_menu.reader then self:context_keypressed(key); return end
+            if reader.receipts and key == "escape" then self:close_receipts(reader, thread); return end
+            if (key == "y" or key == "options") and not reader.link_index
+                and self:open_reader_options(reader, thread) then return end
+        end
         if self.tg.comments_thread and not self.fullscreen_media then
             self:comments_keypressed(self.tg.comments_thread, key)
             return
@@ -1057,7 +1112,8 @@ return function(messenger_screen, layout)
             elseif self.text_preview.album and not self.text_preview.comment_selected and (key == "left" or key == "right") then
                 local preview = self.text_preview
                 preview.album_index = math.max(1, math.min(#preview.album, preview.album_index + (key == "left" and -1 or 1)))
-                preview.photo = {message = preview.album[preview.album_index]}
+                preview.receipt_message = preview.album[preview.album_index]
+                preview.photo = {message = preview.receipt_message}
                 if not self.tg:video_kind(preview.photo.message) then self.tg:ensure_photo(preview.photo.message, true) end
                 preview.scroll = 0
             elseif (key == "return" or key == "kpenter") and self.text_preview.photo
@@ -1325,27 +1381,7 @@ return function(messenger_screen, layout)
             self:reaction_keypressed(key)
             return
         end
-        if self.context_menu then
-            local cm = self.context_menu
-            local count = #(cm.items or {})
-            if key == "up" then
-                cm.index = math.max(1, (cm.index or 1) - 1)
-                cm.scroll = cm.scroll or 0
-                if cm.index <= cm.scroll then cm.scroll = cm.index - 1 end
-            elseif key == "down" then
-                cm.index = math.min(count, (cm.index or 1) + 1)
-                cm.scroll = cm.scroll or 0
-                local _, _, _, _, _, max_visible = self:context_menu_bounds(ui.width(), ui.height())
-                if cm.index > cm.scroll + max_visible then cm.scroll = cm.index - max_visible end
-            elseif key == "return" or key == "kpenter" then
-                local item = cm.items and cm.items[cm.index or 1]
-                self.context_menu = nil
-                self:activate_context_item(cm, item)
-            elseif key == "escape" or key == "b" or key == "y" or key == "backspace" or key == "menu" then
-                self.context_menu = nil
-            end
-            return
-        end
+        if self.context_menu then self:context_keypressed(key); return end
         if self.fullscreen_media then
             local fm = self.fullscreen_media
             if fm.kind == "audio" then
@@ -1728,7 +1764,21 @@ return function(messenger_screen, layout)
         end
     end
 
+    function messenger_screen:context_mousepressed(x, y, button)
+        local cm = self.context_menu
+        local mx, my, menu_w, _, row_h, visible = self:context_menu_bounds(ui.width(), ui.height())
+        local row = math.floor((y - my - 6) / row_h) + 1
+        if button == 1 and x >= mx and x <= mx + menu_w and row >= 1 and row <= visible then
+            self:activate_context_item(cm, cm.items[(cm.scroll or 0) + row])
+        end
+        self.context_menu = nil
+    end
+
     function messenger_screen:mousepressed(x, y, button)
+        if self.context_menu and self.context_menu.reader then self:context_mousepressed(x, y, button); return end
+        local thread = self.tg.comments_thread
+        local reader = thread and thread.preview or not thread and self.text_preview
+        if button == 2 and reader and reader.receipts then self:close_receipts(reader, thread); return end
         if self.tg.comments_thread and not self.fullscreen_media then self:comments_at(x, y, button); return end
         if button == 1 then
             local hits = self.text_preview and {self.text_preview.comment_hit} or self.comment_hits
@@ -1854,16 +1904,7 @@ return function(messenger_screen, layout)
             end
             return
         end
-        if self.context_menu then
-            local cm = self.context_menu
-            local mx, my, menu_w, _, row_h, visible = self:context_menu_bounds(ui.width(), ui.height())
-            local row = math.floor((y - my - 6) / row_h) + 1
-            if x >= mx and x <= mx + menu_w and row >= 1 and row <= visible then
-                self:activate_context_item(cm, cm.items[(cm.scroll or 0) + row])
-            end
-            self.context_menu = nil
-            return
-        end
+        if self.context_menu then self:context_mousepressed(x, y, button); return end
         local w = ui.width()
         local h = ui.height()
         local left_width = self:chat_list_width(w)

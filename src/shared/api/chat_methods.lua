@@ -60,6 +60,44 @@ local function sort_chats(chats, list)
 end
 
 return function(telegram)
+    function telegram:load_profile_user(user_id)
+        self.profile_user = {id = user_id, loading = true}
+        self:send({["@type"] = "getUserFullInfo", user_id = user_id}, "profile_user:" .. tostring(user_id))
+    end
+
+    function telegram:set_profile_user_blocked(blocked)
+        local profile = self.profile_user
+        if not profile or profile.loading or profile.pending or profile.blocked == nil
+            or (self.me and profile.id == self.me.id) then return end
+        profile.pending, profile.error = blocked and "block" or "unblock", nil
+        self:send({["@type"] = "setMessageSenderBlockList",
+            sender_id = {["@type"] = "messageSenderUser", user_id = profile.id},
+            block_list = blocked and {["@type"] = "blockListMain"} or nil}, "profile_block:" .. tostring(profile.id))
+    end
+
+    function telegram:handle_profile_user(kind, extra, object)
+        local info_id = tonumber(extra:match("^profile_user:(%d+)$"))
+        local block_id = tonumber(extra:match("^profile_block:(%d+)$"))
+        if not info_id and not block_id then return false end
+        local profile = self.profile_user
+        if not profile or profile.id ~= (info_id or block_id) then return true end
+        if info_id then
+            profile.loading = false
+            if kind == "userFullInfo" then
+                profile.blocked = object.block_list and object.block_list["@type"] == "blockListMain" or false
+                profile.bio = object.bio and object.bio.text or ""
+                profile.photo = object.personal_photo or object.photo or object.public_photo
+            else
+                profile.error = "Could not load profile details."
+            end
+        elseif profile.pending then
+            if kind == "ok" then profile.blocked = profile.pending == "block"
+            else profile.error = "Could not change the block status." end
+            profile.pending = nil
+        end
+        return true
+    end
+
     function telegram:request_my_profile()
         if not self.me then return end
         self:send({["@type"] = "getUserFullInfo", user_id = self.me.id},

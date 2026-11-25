@@ -634,7 +634,9 @@ function messenger_screen:draw()
     end
 
     self:draw_notifications(f, colors, w, h)
-    if not (self.context_menu and self.context_menu.comment_thread) then self:draw_context_menu(f, colors, w, h) end
+    if self.context_menu and not self.context_menu.reader and not self.context_menu.comment_thread then
+        self:draw_context_menu(f, colors, w, h)
+    end
     if not self.tg.comments_thread then self:draw_reaction_menu(f, colors, w, h) end
 
     self:draw_edit_overlay(f, colors, w, h)
@@ -701,7 +703,9 @@ function messenger_screen:draw()
         self:draw_text_preview(w, h)
         self:draw_post_comments(w, h)
     end
-    if self.context_menu and self.context_menu.comment_thread then self:draw_context_menu(f, colors, w, h) end
+    if self.context_menu and (self.context_menu.reader or self.context_menu.comment_thread) then
+        self:draw_context_menu(f, colors, w, h)
+    end
     if thread then self:draw_reaction_menu(f, colors, w, h) end
     self:draw_html_preview(w, h)
     self:draw_file_browser(w, h)
@@ -844,6 +848,17 @@ function messenger_screen:draw_text_preview(w, h, preview)
     end
     local font = tp.message_text and f.normal or f.tiny
     local width = panel_w - 32
+    if tp.receipts then
+        local rows = {}
+        for _, viewer in ipairs(tp.receipts.viewers or {}) do
+            local name = self.tg:user_name(viewer.user_id)
+            local date = tonumber(viewer.view_date) or 0
+            rows[#rows + 1] = name .. " — " .. (date > 0 and os.date("%Y-%m-%d %H:%M", date) or "Time unavailable")
+        end
+        local text = #rows > 0 and table.concat(rows, "\n") or tp.receipts.status
+        if tp.message_text ~= text then tp.message_text, tp.wrap_width = text, nil end
+        font = f.normal
+    end
     if tp.message_text and (tp.wrap_width ~= width or tp.wrap_font ~= font) then
         tp.lines = wrapped_lines(font, tp.message_text, width)
         tp.reader_links = tp.author_message and helpers.reader_links(tp.message_text, tp.entities) or nil
@@ -1008,8 +1023,11 @@ function messenger_screen:draw_text_preview(w, h, preview)
     else
         hint = "{back} — Close"
     end
-    if tp.link_rows and not tp.link_index and not tp.quote_jump then hint = "{options} — Links   " .. hint end
-    ui.button_hint(hint, left, footer_y, f.tiny, colors.muted)
+    if not tp.link_index and not tp.quote_jump then
+        if self.tg:receipt_chat(tp.receipt_message or tp.author_message) then hint = "{options} — Options   " .. hint
+        elseif tp.link_rows then hint = "{options} — Links   " .. hint end
+    end
+    ui.button_hint(hint, left, footer_y, f.tiny, colors.muted, width)
     if tp.max_scroll > 0 then
         local track_h = visible * line_h
         local thumb_h = math.max(12, track_h * visible / count)
@@ -1474,7 +1492,14 @@ function messenger_screen:fullscreen_image()
     if not media then return end
     if media.kind == "video" then return self.tg:video_image(media.message) end
     if media.kind == "video_note" then return self.tg:video_note_image(media.message) end
-    if media.kind == "animation" then return self.tg:animation_image(media.message) end
+    if media.kind == "animation" then
+        local active = self.tg.active_video
+        if active and active.kind == "gif" then
+            local entry = self.tg.animations[active.file_id]
+            return active.video or (entry and entry.image)
+        end
+        return self.tg:animation_image(media.message)
+    end
     if media.kind == "sticker" then return self.tg:sticker_image(media.message) end
     return self.tg:photo_image(media.message, media.media_index or 1, nil, true)
 end
@@ -1559,6 +1584,7 @@ function messenger_screen:draw_fullscreen_media(w, h)
     if fullscreen.kind == "sticker" then self.tg:ensure_animated_sticker(fullscreen.message, true) end
     local image = self:fullscreen_image()
     local video_entry = fullscreen.kind == "video" and self.tg.active_video
+    local gif_stream = fullscreen.kind == "animation" and self.tg.active_video
     love.graphics.setColor(0, 0, 0, 1)
     love.graphics.rectangle("fill", 0, 0, w, h)
 
@@ -1617,7 +1643,8 @@ function messenger_screen:draw_fullscreen_media(w, h)
                 if (entry.total_bytes or 0) > 0 then fraction = math.min(0.99, bytes / entry.total_bytes) end
             end
         elseif fullscreen.kind == "animation" then
-            progress_text = animation and animation.decode_error or "Loading GIF…"
+            local active = self.tg.active_video
+            progress_text = (active and active.decode_error) or (animation and animation.decode_error) or "Loading GIF…"
         elseif fullscreen.kind == "photo" and fullscreen.message then
             local msg = fullscreen.message
             local key = self.tg:media_message_key(msg)
@@ -1643,6 +1670,11 @@ function messenger_screen:draw_fullscreen_media(w, h)
             ui.rect(x, h / 2 + 32, track_width * fraction, 6, ui.colors.accent, 3)
         end
         ui.printf(progress_text, 24, h / 2, w - 48, "center", self.fonts.normal, ui.colors.white)
+    end
+    if image and gif_stream and not gif_stream.video then
+        local status = gif_stream.decode_error or (animation and animation.decode_error)
+            or (gif_stream.status == "decoding" and "Preparing GIF…" or "Loading GIF…")
+        ui.printf(status, 24, h - 68, w - 48, "center", self.fonts.tiny, ui.colors.white)
     end
 
     if fullscreen.kind == "video" and image then
@@ -1849,6 +1881,9 @@ function messenger_screen:context_menu_items(message)
     end
     if self:outgoing(message) and message.content and message.content["@type"] == "messageText" then
         items[#items + 1] = {label = "Edit", action = "edit"}
+    end
+    if self.tg:receipt_chat(message) then
+        items[#items + 1] = {label = "Read receipts", action = "read_receipts"}
     end
     return items
 end
@@ -2919,7 +2954,7 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
     end
 
     local time_text = os.date("%H:%M", message.date or 0)
-    ui.text(time_text, x + bubble_w - padding - f.tiny:getWidth(time_text), y + body_height - padding - f.tiny:getHeight(), f.tiny, colors.muted)
+    self:draw_message_timestamp(message, time_text, x + bubble_w - padding, y + body_height - padding - f.tiny:getHeight())
     if comment_count then self:draw_comment_link(message, comment_count, x + padding, y + body_height, bubble_w - padding * 2) end
 end
 
