@@ -81,5 +81,3 @@ When reporting a problem, include the SPgram version, handheld model, KNULLI ver
 ## License and credits
 
 SPgram is distributed under the MIT License. Bundled components carry their own license notices.
-
-Maintained by **Noksjava**. Based on **TGmuOS-LOVE** by **archeryfox**. [Upstream project](https://github.com/archeryfox/TGmuOS-LOVE)
