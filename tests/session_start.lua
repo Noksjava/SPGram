@@ -195,6 +195,9 @@ local jobs = {
     {radio = "enable"},
     {radio = "disable"},
     {radio = "enable"},
+    {radio = "toggle"},
+    {radio = "toggle"},
+    {radio = "toggle"},
     {stop = true},
 }
 local returned, commands, job_index = {}, {}, 0
@@ -204,6 +207,8 @@ love.thread = {getChannel = function(name)
     if name == "wifi_power_in" then return {demand = function()
         job_index = job_index + 1
         if job_index == 2 then modes.wlan0 = "on" end
+        if job_index == 11 then radio_setting = "1\n" end
+        if job_index == 13 then radio_setting = nil end
         return jobs[job_index]
     end} end
     return {push = function(_, value) returned[#returned + 1] = value end}
@@ -234,7 +239,7 @@ os.execute = function(command)
 end
 dofile("threads/wifi_power.lua")
 io.popen, os.execute = original_popen, original_execute
-assert(table.concat(commands, ",") == "wlan0 off,wlan0 off,wlan0 on,wlan0 off,wlan0 on,disable,enable,disable,enable")
+assert(table.concat(commands, ",") == "wlan0 off,wlan0 off,wlan0 on,wlan0 off,wlan0 on,disable,enable,disable,enable,disable,enable")
 assert(returned[1].status == "Active" and returned[2].status == "Active" and returned[3].status == "Off")
 assert(returned[4].status == "Active" and returned[5].status == "Driver unavailable")
 assert(modes.wlan0 == "on" and modes.wlan1 == "off")
@@ -242,4 +247,7 @@ assert(returned[7].ok and returned[7].status == "Disabled")
 assert(returned[8].ok and returned[8].status == "Enabled")
 assert(not returned[9].ok and returned[9].status == "Timed out")
 assert(not returned[10].ok and returned[10].status == "State unverified")
+assert(returned[11].ok and returned[11].radio == "disable")
+assert(returned[12].ok and returned[12].radio == "enable")
+assert(not returned[13].ok and returned[13].status == "State unavailable")
 print("Wi-Fi keep-awake is opt-in, reapplies a reset mode, and restores settings on disable and exit")

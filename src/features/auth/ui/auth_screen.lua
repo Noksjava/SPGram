@@ -93,7 +93,6 @@ function auth_screen:draw()
     ui.rect(0, 46, w, 2, colors.accent_dark)
     ui.pixel_chat(20, 13, 3, colors.accent)
     ui.text("SPgram", 56, 12, f.subtitle, colors.text)
-    ui.text("Unofficial client using the Telegram API", 150, 16, f.small, colors.muted)
     if self.version then
         ui.printf("v" .. self.version, w - 100, 16, 80, "right", f.small, colors.muted)
     end

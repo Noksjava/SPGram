@@ -29,13 +29,13 @@ return function(telegram)
 
     function telegram:wifi_radio_label(action)
         if self.wifi_radio_action then
-            return self.wifi_radio_action == action and "Working…" or "Wait…"
+            return (not action or self.wifi_radio_action == action) and "Working…" or "Wait…"
         end
-        if self.wifi_radio_last_action == action then return self.wifi_radio_status end
+        if not action or self.wifi_radio_last_action == action then return self.wifi_radio_status end
     end
 
     function telegram:set_wifi_radio(action)
-        if (action ~= "enable" and action ~= "disable") or not self:wifi_radio_supported()
+        if (action ~= "enable" and action ~= "disable" and action ~= "toggle") or not self:wifi_radio_supported()
             or self.wifi_radio_action then return false end
         self.wifi_radio_action = action
         self.wifi_radio_pending = {radio = action}

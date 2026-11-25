@@ -111,8 +111,8 @@ assert(circles[7][1] == "fill" and circles[7][2] > circles[6][2])
 ui.width = function() return 640 end
 ui.height = function() return 480 end
 ui.rect = function() end
-ui.text = function() end
 ui.printf = function(label) drawn[#drawn + 1] = label end
+ui.text = ui.printf
 ui.button_hint = ui.printf
 love.filesystem = {read = function(name)
     assert(name == "VERSION")
@@ -123,6 +123,7 @@ local setup = auth.new({}, {
 })
 setup:draw()
 local text = table.concat(drawn, "\n")
+assert(not text:find("Unofficial client using the Telegram API", 1, true))
 assert(text:find("Telegram setup required", 1, true))
 assert(text:find("v0.2.57", 1, true))
 assert(text:find("telegramsp/conf/telegram.conf", 1, true))

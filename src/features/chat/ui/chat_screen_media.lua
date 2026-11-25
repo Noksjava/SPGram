@@ -151,11 +151,13 @@ return function(messenger_screen)
     end
 
     function messenger_screen:photo_geometry(message, max_bubble, padding, measure)
-        local image, width, height = self.tg:photo_image(message, nil, measure)
-        if not image or not width or not height or width <= 0 or height <= 0 then return nil end
+        local photo = self.tg:choose_photo_size(message)
+        if not photo then return end
+        local width, height = math.max(1, tonumber(photo.width) or 96), math.max(1, tonumber(photo.height) or 96)
+        local image = not measure and self.tg:photo_image(message) or nil
         local max_width = math.max(96, math.floor(max_bubble / 3 - padding * 2))
-        local scale = math.min(1, max_width / width)
-        return image, math.floor(width * scale), math.floor(height * scale)
+        local scale = math.min(1, max_width / width, 180 / height)
+        return image, math.max(1, math.floor(width * scale)), math.max(1, math.floor(height * scale))
     end
 
     function messenger_screen:photo_caption(message)
@@ -165,32 +167,34 @@ return function(messenger_screen)
     end
 
     function messenger_screen:sticker_geometry(message, max_bubble, padding, measure)
-        local image, width, height = self.tg:sticker_image(message, measure)
-        local emoji = ""
         local content = message and message.content
-        if content and content["@type"] == "messageSticker" then
-            emoji = content.sticker and content.sticker.emoji or ""
-        end
-        if not image or not width or not height or width <= 0 or height <= 0 then
-            return nil, nil, nil, emoji
-        end
+        if not content or self.tg:is_ephemeral_media(message) then return end
+        local doc = content["@type"] == "messageDocument" and content.document
+        local sticker = content["@type"] == "messageSticker" and (content.sticker or {})
+        if not sticker and not (doc and (doc.file_name or ""):lower():match("%.tgs$")) then return end
+        sticker = sticker or {}
+        local width, height = tonumber(sticker.width) or 96, tonumber(sticker.height) or 96
+        if width <= 0 or height <= 0 then width, height = 96, 96 end
+        local image = not measure and self.tg:sticker_image(message) or nil
         local max_width = math.max(48, math.floor((max_bubble - padding * 2) / 3))
-        local scale = math.min(1, max_width / width)
-        return image, math.floor(width * scale), math.floor(height * scale), emoji
+        local scale = math.min(1, max_width / width, 136 / height)
+        return image, math.max(1, math.floor(width * scale)), math.max(1, math.floor(height * scale)), sticker.emoji or ""
     end
 
     function messenger_screen:animation_geometry(message, max_bubble, padding, measure)
         local content = message and message.content
-        if not content or content["@type"] ~= "messageAnimation" then
-            return nil, nil, nil, ""
+        if not content or content["@type"] ~= "messageAnimation" then return end
+        local animation = content.animation or {}
+        local thumb = animation.thumbnail or {}
+        local width, height = tonumber(animation.width), tonumber(animation.height)
+        if not width or not height or width <= 0 or height <= 0 then
+            width, height = tonumber(thumb.width) or 0, tonumber(thumb.height) or 0
         end
-        local image, width, height = self.tg:animation_image(message, measure)
-        if not image or not width or not height or width <= 0 or height <= 0 then
-            return nil, nil, nil, "[GIF]"
-        end
+        if width <= 0 or height <= 0 then width, height = 96, 96 end
         local max_width = math.max(48, math.floor((max_bubble - padding * 2) / 3))
-        local scale = math.min(1, max_width / width)
-        return image, math.floor(width * scale), math.floor(height * scale), ""
+        local scale = math.min(1, max_width / width, 136 / height)
+        local image = not measure and self.tg:animation_image(message) or nil
+        return image, math.max(1, math.floor(width * scale)), math.max(1, math.floor(height * scale))
     end
 
     function messenger_screen:video_card_size(max_bubble, padding)

@@ -13,10 +13,21 @@ return function(telegram)
         if self.anim_worker then return true end
         self.anim_in:clear()
         self.anim_out:clear()
+        self.anim_priority_in:clear()
+        self.anim_priority_out:clear()
         self.anim_worker = love.thread.newThread("threads/anim_decode.lua")
         self.anim_worker:start()
         diag(self, "MEDIA: spawned anim_decode thread")
         return true
+    end
+
+    function telegram:submit_media_job(job, priority)
+        if priority and self.anim_priority_in then
+            self.anim_priority_in:push(job)
+            self.anim_in:push({type = "wake"})
+        else
+            self.anim_in:push(job)
+        end
     end
 
     function telegram:media_entry(kind, file_id)
@@ -117,6 +128,9 @@ return function(telegram)
             and not preferences.get("inline_animation") and self.manual_animation_entry ~= entry then return end
         if first_frame and (entry.preview_ready or entry.preview_requested or entry.frames) then return end
         if not first_frame and (entry.decode_requested or entry.frames) then return end
+        local priority = self.manual_animation_entry == entry
+        if not priority and self.anim_in.getCount
+            and (self.foreground_media or self.anim_in:getCount() >= 2) then return end
         self:ensure_media_decoder()
         local safe_id = tostring(file_id):gsub("[^%w_-]", "_")
         local mode = first_frame and "preview" or "playback"
@@ -127,7 +141,7 @@ return function(telegram)
         end
         entry.status = "decoding"
         diag(self, string.format("MEDIA: queue %s id=%s %s", kind, file_id, first_frame and "preview" or "playback"))
-        self.anim_in:push({
+        self:submit_media_job({
             type = "decode",
             kind = kind,
             file_id = file_id,
@@ -136,7 +150,7 @@ return function(telegram)
             first_frame = first_frame == true,
             duration = entry.duration,
             out_dir = love.filesystem.getSaveDirectory() .. "/anim_" .. kind .. "_" .. safe_id .. "_" .. mode,
-        })
+        }, priority)
     end
 
     function telegram:ensure_sticker_frames(file_id, first_frame)
@@ -259,10 +273,19 @@ return function(telegram)
 
     function telegram:poll_media_decoder(draining)
         if not self.anim_out then return end
+        if self.anim_priority_out then
+            local result = self.anim_priority_out:pop()
+            while result do
+                if result.type == "converted_video" then self:finish_video_conversion(result)
+                elseif result.type == "converted_audio" then self:finish_audio_conversion(result) end
+                result = self.anim_priority_out:pop()
+            end
+        end
         local get_time = love and love.timer and love.timer.getTime or os.clock
         local deadline = get_time() + 0.003
         local uploads_left = draining and math.huge or 4
         repeat
+            if self.foreground_media and not draining and not self.manual_animation_entry then break end
             local result = self.pending_frame_upload or self.anim_out:pop()
             if not result then break end
             if type(result) == "table" and result.type == "converted_audio" then

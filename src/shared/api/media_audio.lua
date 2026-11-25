@@ -80,8 +80,8 @@ return function(telegram)
             if path:sub(1, #root) == root and stream_audio(entry, path:sub(#root + 1)) then return end
             self:ensure_media_decoder()
             entry.status = "decoding"
-            self.anim_in:push({type = "convert_audio", name = entry.name,
-                path = data.path, output = root .. entry.name})
+            self:submit_media_job({type = "convert_audio", name = entry.name,
+                path = data.path, output = root .. entry.name}, true)
         elseif data.can_be_downloaded == false and not data.is_downloading_active then
             entry.status, entry.audio_error = "error", "Telegram could not download this audio."
         end

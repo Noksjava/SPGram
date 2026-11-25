@@ -10,6 +10,7 @@ local settings = {
     message_sound = true,
     ui_motion = true,
     startup_intro = true,
+    check_updates_on_launch = true,
     wifi_keep_awake = false,
     inline_animation = true,
     profile_pictures = true,

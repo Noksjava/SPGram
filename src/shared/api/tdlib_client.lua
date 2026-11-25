@@ -37,6 +37,8 @@ function telegram.new()
     self.out_channel = love.thread.getChannel("td_out")
     self.anim_in = love.thread.getChannel("anim_in")
     self.anim_out = love.thread.getChannel("anim_out")
+    self.anim_priority_in = love.thread.getChannel("anim_priority_in")
+    self.anim_priority_out = love.thread.getChannel("anim_priority_out")
     self.thumbnail_in = love.thread.getChannel("thumbnail_in")
     self.thumbnail_out = love.thread.getChannel("thumbnail_out")
     self.sequence = 0
@@ -226,6 +228,7 @@ function telegram:shutdown()
     self:release_audio()
     self:release_video()
     if self.anim_in then
+        self.anim_in:clear()
         self.anim_in:push({type = "quit"})
     end
     if self.thumbnail_worker then
@@ -239,6 +242,7 @@ function telegram:shutdown()
         self.anim_worker = nil
         self:poll_media_decoder(true)
     end
+    self:collect_video_source(math.huge)
     if not self.worker then
         return true
     end
@@ -491,8 +495,12 @@ function telegram:is_chat_muted(chat)
 end
 
 function telegram:update(dt)
+    local now = love.timer.getTime()
+    self:poll_video_seek(now)
+    self:collect_video_source(now)
+    self:poll_media_decoder()
     self:poll()
-    if self.ready then self:request_custom_emojis() end
+    if self.ready and not self.foreground_media then self:request_custom_emojis() end
 
     if self.proxy_wait_start and not self.proxy_confirmed then
         if love.timer.getTime() - self.proxy_wait_start >= 2 then
@@ -504,16 +512,16 @@ function telegram:update(dt)
             log_to_file(self, "TDLib: proxy confirmed via fallback (2s)")
         end
     end
-    self:poll_media_decoder()
-    self:poll_thumbnail_worker()
-    self:poll_avatar_images()
-    self:dispatch_webp_image()
-    local now = love.timer.getTime()
+    if self.foreground_media ~= "video" and self.foreground_media ~= "audio" then
+        self:poll_thumbnail_worker()
+        self:dispatch_webp_image()
+    end
+    if not self.foreground_media then self:poll_avatar_images() end
     self:poll_network(now, os.time())
     self:poll_wifi_power()
     self:check_history_timeout(now)
     self:poll_video_progress(now)
-    if self.ready and not (self.options and self.options.sign_in_only)
+    if self.ready and not self.foreground_media and not (self.options and self.options.sign_in_only)
         and now >= (self.next_photo_cleanup or 0) then
         self.next_photo_cleanup = now + 300
         self:prune_download_cache(false)
@@ -546,7 +554,8 @@ function telegram:update(dt)
 end
 
 function telegram:poll()
-    local deadline = love.timer.getTime() + 0.004
+    local deadline = love.timer.getTime() + (self.foreground_media and 0.002 or 0.004)
+    self.defer_chat_lists = true
     for _ = 1, 200 do
         local raw = self.out_channel:pop()
         if not raw then
@@ -557,6 +566,12 @@ function telegram:poll()
             self:handle(object)
         end
         if love.timer.getTime() >= deadline then break end
+    end
+    self.defer_chat_lists = nil
+    if not self.foreground_media then
+        if self.pending_main_list then self:rebuild_chats() end
+        if self.pending_archive_list then self:rebuild_archive_chats() end
+        if self.pending_filter_lists then self:rebuild_filter_chats() end
     end
 end
 
@@ -571,6 +586,8 @@ function telegram:handle(object)
     end
 
     local extra = tostring(object["@extra"] or "")
+    if extra:sub(1, 13) == "sponsor_link:"
+        and self:handle_sponsor_link(kind, extra, object, love.timer.getTime()) then return end
     if self:handle_gif_picker_response(kind, extra, object) or self:handle_comments_response(kind, extra, object)
         or self:handle_reply_preview(kind, extra, object) or self:handle_my_profile(kind, extra, object)
         or self:handle_quote_history(kind, extra, object) or self:handle_emoji_response(kind, extra, object) or self:handle_chat_send_access(kind, extra, object) then return end
@@ -652,7 +669,6 @@ function telegram:handle(object)
             chat.last_read_inbox_message_id = object.last_read_inbox_message_id
         end
     elseif kind == "updateNewMessage" then
-        log_to_file(self, "TDLib: received updateNewMessage chat_id=" .. tostring(object.message and object.message.chat_id or "nil"))
         self:receive_thread_message(object.message)
         self:handle_new_message(object.message)
     elseif kind == "updateMessageSendSucceeded" then
@@ -841,6 +857,10 @@ function telegram:handle(object)
         end
         log_to_file(self, string.format("TDLib error: code=%s request=%s", tostring(object.code),
             extra:match("^[%w_]+") or "unknown"))
+        if self:fail_avatar_download(extra) then
+            self.active_downloads = math.max(0, (self.active_downloads or 0) - 1)
+            return
+        end
         local qr_query_in_progress = extra == "qr"
             and message:find("Another authorization query has started", 1, true) ~= nil
         if extra == "tdlib_params" then
@@ -1046,7 +1066,10 @@ function telegram:handle_file(file)
         if file["@type"] == "file" then
             self.active_downloads = math.max(0, (self.active_downloads or 0) - 1)
         end
-        return self:handle_video_file(file, active_video)
+        if not extra:match("^video_download:") or extra == active_video.download_token then
+            return self:handle_video_file(file, active_video)
+        end
+        return
     end
     local animation = self.animations[file_id]
     if animation then
@@ -1141,6 +1164,10 @@ function telegram:handle_file(file)
     end
     local downloaded_size = tonumber(file_local.downloaded_size) or 0
     local downloaded_prefix = tonumber(file_local.downloaded_prefix_size) or 0
+    if kind == "avatar" and entry.download_deadline
+        and math.max(downloaded_size, downloaded_prefix) > (entry.downloaded_bytes or 0) then
+        entry.download_deadline = love.timer.getTime() + 20
+    end
     entry.downloaded_bytes = math.max(downloaded_size, downloaded_prefix, entry.downloaded_bytes or 0)
     if entry.total_bytes and entry.total_bytes > 0 then
         entry.download_progress = math.min(1, entry.downloaded_bytes / entry.total_bytes)

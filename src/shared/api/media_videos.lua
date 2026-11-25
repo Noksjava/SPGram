@@ -173,6 +173,16 @@ return function(telegram)
         return animation
     end
 
+    function telegram:download_video(entry)
+        entry.requested = true
+        self.video_request_sequence = (self.video_request_sequence or 0) + 1
+        entry.download_token = "video_download:" .. tostring(self.video_request_sequence)
+        self:send({
+            ["@type"] = "downloadFile", file_id = entry.file_id, priority = 32,
+            offset = 0, limit = VIDEO_BYTES + 1, synchronous = false,
+        }, entry.download_token)
+    end
+
     function telegram:request_video(message)
         if self:is_ephemeral_media(message) then return end
         local content = message.content or {}
@@ -196,18 +206,21 @@ return function(telegram)
             autoplay = true, status = "downloading",
         }
         storage[file.id], self.active_video = entry, entry
+        local retired = self.retired_video
+        local previous = self.video_conversion
+        if retired and retired.file_id == file.id then self.retired_video = nil end
         if os.getenv("SPGRAM_NO_FFMPEG") == "1" then
             entry.status, entry.decode_error = "error", "Video playback requires FFmpeg on this device."
         elseif file_size(file) > VIDEO_BYTES then
             entry.status, entry.decode_error = "error", VIDEO_LIMIT_ERROR
+        elseif previous and previous.file_id == file.id then
+            entry.requested = previous.requested
+            self:load_video(file.id, previous.source_path)
+        elseif retired and retired.file_id == file.id and retired.source_path then
+            entry.requested = retired.requested
+            self:load_video(file.id, retired.source_path)
         else
-            entry.requested = true
-            self.video_request_sequence = (self.video_request_sequence or 0) + 1
-            entry.download_token = "video_download:" .. tostring(self.video_request_sequence)
-            self:send({
-                ["@type"] = "downloadFile", file_id = file.id, priority = 32,
-                offset = 0, limit = VIDEO_BYTES + 1, synchronous = false,
-            }, entry.download_token)
+            self:download_video(entry)
         end
         return entry
     end
@@ -221,12 +234,34 @@ return function(telegram)
         if entry.video then
             entry.video:pause()
             entry.video:release()
+            entry.video = nil
         end
-        if entry.status == "decoding" then love.filesystem.write(entry.name .. ".cancel", "cancel") end
+        entry.seek_target, entry.seek_at = nil, nil
+        if self.video_conversion == entry then
+            love.filesystem.write(entry.name .. ".cancel", "cancel")
+            return
+        end
         if entry.name then love.filesystem.remove(entry.name) end
         if entry.requested or entry.source_path then
-            self:send({["@type"] = "cancelDownloadFile", file_id = entry.file_id, only_if_pending = false})
-            self:send({["@type"] = "deleteFile", file_id = entry.file_id})
+            self:collect_video_source(math.huge)
+            entry.cleanup_at = love.timer.getTime() + 0.8
+            self.retired_video = entry
+        end
+    end
+
+    function telegram:delete_video_source(entry)
+        local active = self.active_video
+        if active and active.file_id == entry.file_id then return end
+        self:send({["@type"] = "cancelDownloadFile", file_id = entry.file_id, only_if_pending = false})
+        self:send({["@type"] = "deleteFile", file_id = entry.file_id})
+    end
+
+    function telegram:collect_video_source(now)
+        local retired = self.retired_video
+        if not retired or now < retired.cleanup_at then return end
+        self.retired_video = nil
+        if not self.video_conversion or self.video_conversion.file_id ~= retired.file_id then
+            self:delete_video_source(retired)
         end
     end
 
@@ -251,10 +286,18 @@ return function(telegram)
         local entry = self.active_video
         if not entry or entry.file_id ~= file_id or entry.status ~= "downloading" then return end
         entry.source_path = path
+        if self.video_conversion then
+            entry.status = "waiting"
+            return
+        end
         local file = io.open(path, "rb")
         local size = file and file:seek("end") or 0
         if file then file:close() end
-        if size <= 0 or size > VIDEO_BYTES then
+        if size == 0 and not entry.retried_source then
+            entry.retried_source, entry.source_path = true, nil
+            self:download_video(entry)
+            return
+        elseif size <= 0 or size > VIDEO_BYTES then
             entry.status, entry.decode_error = "error", "Video is missing or exceeds the playback limit."
             return
         end
@@ -264,8 +307,9 @@ return function(telegram)
         local output = love.filesystem.getSaveDirectory() .. "/" .. entry.name
         entry.progress_path = output .. ".progress"
         entry.status = "decoding"
-        self.anim_in:push({type = "convert_video", path = path, name = entry.name,
-            output = output})
+        self.video_conversion = entry
+        self:submit_media_job({type = "convert_video", path = path, name = entry.name,
+            output = output}, true)
     end
 
     function telegram:poll_video_progress(now)
@@ -282,19 +326,37 @@ return function(telegram)
         for microseconds in (tail or ""):gmatch("\nout_time_us=(%d+)\r?\n") do
             entry.converted_seconds = math.max(entry.converted_seconds or 0, tonumber(microseconds) / 1000000)
         end
+        for frames in ("\n" .. (tail or "")):gmatch("\nframe=%s*(%d+)\r?\n") do
+            entry.converted_frames = math.max(entry.converted_frames or 0, tonumber(frames))
+        end
     end
 
     function telegram:finish_video_conversion(result)
-        local entry = self.active_video
-        if entry and entry.name == result.name and result.ok then
-            self:poll_video_progress(math.huge)
-            if entry.duration == 0 then entry.duration = entry.converted_seconds or 0 end
-        end
-        remove_video_signals(result.name)
-        if not entry or entry.name ~= result.name then
+        local entry = self.video_conversion
+        if not entry or entry.name ~= result.name then return end
+        self.video_conversion = nil
+        local active = self.active_video
+        if active ~= entry then
+            remove_video_signals(result.name)
             love.filesystem.remove(result.name)
+            if not self.retired_video or self.retired_video.file_id ~= entry.file_id then
+                self:delete_video_source(entry)
+            end
+            if active and active.status == "waiting" then
+                active.status = "downloading"
+                self:load_video(active.file_id, active.source_path)
+            end
             return
         end
+        if result.ok then
+            self:poll_video_progress(math.huge)
+            if (entry.converted_frames or 0) > 0 then
+                entry.duration = entry.converted_frames / 15
+            elseif entry.duration <= 0 then
+                entry.duration = entry.converted_seconds or 0
+            end
+        end
+        remove_video_signals(result.name)
         if result.ok then
             local ok, video = pcall(love.graphics.newVideo, result.name)
             if ok then
@@ -366,7 +428,8 @@ return function(telegram)
 
     function telegram:handle_animation_file(file, entry)
         local local_file = file["local"] or {}
-        if math.max(file_size(file), tonumber(local_file.downloaded_size) or 0) > ANIMATION_BYTES then
+        local bytes = math.max(tonumber(local_file.downloaded_size) or 0, tonumber(local_file.downloaded_prefix_size) or 0)
+        if math.max(file_size(file), bytes) > ANIMATION_BYTES then
             if entry.download_requested then
                 self:send({["@type"] = "cancelDownloadFile", file_id = file.id, only_if_pending = false})
                 self:send({["@type"] = "deleteFile", file_id = file.id})
@@ -376,12 +439,17 @@ return function(telegram)
             return
         end
         if entry.status == "error" then return end
+        entry.total_bytes = math.max(entry.total_bytes or 0, file_size(file))
+        entry.downloaded_bytes = math.max(entry.downloaded_bytes or 0, bytes)
+        if entry.total_bytes > 0 then entry.download_progress = math.min(1, entry.downloaded_bytes / entry.total_bytes) end
         if local_file.is_downloading_completed and local_file.path and local_file.path ~= "" then
             entry.download_requested = nil
             entry.source_path = local_file.path
             if self.manual_animation_entry == entry
                 or (preferences.get("inline_animation") and entry.last_visible and love.timer.getTime() - entry.last_visible < 1) then
                 self:queue_media_decode("animation", file.id, local_file.path)
+            elseif entry.status == "downloading" then
+                entry.status = entry.image and "ready" or "remote"
             end
         elseif local_file.can_be_downloaded == false and not local_file.is_downloading_active then
             entry.download_requested = nil

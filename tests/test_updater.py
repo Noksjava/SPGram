@@ -8,6 +8,7 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 from zipfile import ZipFile, ZipInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "portmaster"))
@@ -130,10 +131,6 @@ class UpdateTest(unittest.TestCase):
         self.openssl_run("genpkey", "-algorithm", "ED25519", "-out", self.private_key)
         self.openssl_run("pkey", "-in", self.private_key, "-pubout", "-outform", "DER",
                          "-out", self.root / updater.UPDATE_KEY)
-        (self.session.parent / "updates.json").write_text(
-            json.dumps({"repository": "maintainer/telegramsp", "firmware": "Gladiator II"}),
-            encoding="utf-8",
-        )
         with patch.object(updater.platform, "machine", return_value="aarch64"):
             return updater.Releases(self.store, "0.1.0")
 
@@ -156,7 +153,7 @@ class UpdateTest(unittest.TestCase):
         manifest["update_asset"]["url"] = asset_url
         manifest_url = releases.address("0.2.0", "release-manifest.json")
         sig_url = releases.address("0.2.0", updater.SIGNATURE_NAME)
-        api_url = "https://api.github.com/repos/maintainer/telegramsp/releases/latest"
+        api_url = "https://api.github.com/repos/Noksjava/SPGram/releases/latest"
         payload = json.dumps(manifest).encode()
         proof = self.sign(payload)
         release = {"tag_name": "v0.2.0", "draft": False, "prerelease": False,
@@ -182,6 +179,20 @@ class UpdateTest(unittest.TestCase):
             return len(data)
 
         with patch.object(updater, "fetch", side_effect=mock_fetch):
+            release["tag_name"] = "2.57-I"
+            self.assertEqual(releases.check(), {"available": False, "no_release": True})
+            release["tag_name"] = "v0.2.0"
+            signed_assets = release["assets"]
+            full_name = "SPgram-PortMaster-v0.2.0.zip"
+            release["assets"] = [{"name": full_name, "browser_download_url": releases.address("0.2.0", full_name)}]
+            self.assertEqual(releases.check(), {"latest": "0.2.0", "manual_update": True})
+            release["assets"] = signed_assets
+            good_proof = proof
+            proof = bytes([proof[0] ^ 1]) + proof[1:]
+            with self.assertRaisesRegex(ValueError, "signature"):
+                releases.check()
+            self.assertFalse(releases.manifest.exists())
+            proof = good_proof
             self.assertTrue(releases.check()["available"])
             releases.cancel.touch()
             with self.assertRaisesRegex(ValueError, "cancelled"):
@@ -199,6 +210,18 @@ class UpdateTest(unittest.TestCase):
             release["assets"][2]["browser_download_url"] = "https://example.org/other.zip"
             with self.assertRaisesRegex(ValueError, "missing"):
                 releases.check()
+
+    def test_fixed_repository_and_empty_release(self):
+        current = self.releases()
+        (self.session.parent / "updates.json").write_text(
+            '{"repository":"other/project","firmware":"Gladiator II"}', encoding="ascii",
+        )
+        with patch.object(updater.platform, "machine", return_value="aarch64"):
+            self.assertEqual(updater.Releases(self.store, "0.1.0").repository, current.repository)
+            (self.root / updater.UPDATE_REPOSITORY).write_text("maintainer/fork\n", encoding="ascii")
+            self.assertEqual(updater.Releases(self.store, "0.1.0").repository, "maintainer/fork")
+        with patch.object(updater, "fetch", side_effect=HTTPError("", 404, "", None, None)):
+            self.assertEqual(current.check(), {"available": False, "no_release": True})
 
     def test_network_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "Untrusted"):

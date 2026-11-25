@@ -94,6 +94,7 @@ function messenger_screen.new(fonts, tg)
     self.wants_profile_user_id = nil
     self.wants_open_chat = nil
     self.fullscreen_media = nil
+    self.fullscreen_hint_time = nil
     self.sticker_pack_menu = nil
     self.last_media_click = nil
     self.search_active = false
@@ -309,7 +310,30 @@ function messenger_screen:submit_search()
 end
 
 function messenger_screen:update(dt)
+    if self.fullscreen_media then
+        local pan_x = self.fullscreen_pan_x or 0
+        local pan_y = self.fullscreen_pan_y or 0
+        local target_x = self.fullscreen_pan_target_x
+        local target_y = self.fullscreen_pan_target_y
+        if target_x ~= nil then
+            local factor = 1 - math.exp(-12 * dt)
+            pan_x = pan_x + (target_x - pan_x) * factor
+            if math.abs(target_x - pan_x) < 0.5 then pan_x = target_x; target_x = nil end
+            self.fullscreen_pan_x = pan_x
+            self.fullscreen_pan_target_x = target_x
+        end
+        if target_y ~= nil then
+            local factor = 1 - math.exp(-12 * dt)
+            pan_y = pan_y + (target_y - pan_y) * factor
+            if math.abs(target_y - pan_y) < 0.5 then pan_y = target_y; target_y = nil end
+            self.fullscreen_pan_y = pan_y
+            self.fullscreen_pan_target_y = target_y
+        end
+        return
+    end
+
     self:update_quote_jump()
+    self:update_sponsor_link()
     local action = (self.tg.action_error ~= "" and self.tg.action_error) or self.tg.action_status
     if action and action ~= "" and action ~= self.last_action then
         self.notification_timer = 6
@@ -420,26 +444,6 @@ function messenger_screen:update(dt)
         self.keyboard.visible = false
     end
 
-    if self.fullscreen_media then
-        local pan_x = self.fullscreen_pan_x or 0
-        local pan_y = self.fullscreen_pan_y or 0
-        local target_x = self.fullscreen_pan_target_x
-        local target_y = self.fullscreen_pan_target_y
-        if target_x ~= nil then
-            local factor = 1 - math.exp(-12 * dt)
-            pan_x = pan_x + (target_x - pan_x) * factor
-            if math.abs(target_x - pan_x) < 0.5 then pan_x = target_x; target_x = nil end
-            self.fullscreen_pan_x = pan_x
-            self.fullscreen_pan_target_x = target_x
-        end
-        if target_y ~= nil then
-            local factor = 1 - math.exp(-12 * dt)
-            pan_y = pan_y + (target_y - pan_y) * factor
-            if math.abs(target_y - pan_y) < 0.5 then pan_y = target_y; target_y = nil end
-            self.fullscreen_pan_y = pan_y
-            self.fullscreen_pan_target_y = target_y
-        end
-    end
 
     local held_keys = {}
     if self.tg and love and love.keyboard and love.keyboard.isDown then
@@ -479,6 +483,10 @@ function messenger_screen:draw()
     local colors = ui.colors
     local w = ui.width()
     local h = ui.height()
+    if self.fullscreen_media then
+        self:draw_fullscreen_media(w, h)
+        return
+    end
     local left_width = self:chat_list_width(w)
     local right_width = w - left_width
 
@@ -601,7 +609,7 @@ function messenger_screen:draw()
         local message = self:focused_message()
         local kind = message and message.content and message.content["@type"]
         local action = kind == "messageText" and "Read" or "Open"
-        if self:is_video_post(message, chat) then action = "Read post"
+        if self:is_video_post(message, chat) and self:has_post_details(message) then action = "Read post"
         elseif self.tg:video_kind(message) or kind == "messageAudio" or kind == "messageVoiceNote" then action = "Play" end
         local comment = self:focused_comment_target()
         hint = "{confirm} — " .. (self.nav_albums and message and self.nav_albums[message.id] and "Post" or action)
@@ -634,13 +642,23 @@ function messenger_screen:draw()
         and not self.tg.sticker_set_viewer then
         self.keyboard:draw(self:keyboard_preview())
     end
-    if not self.tg.comments_thread then self:draw_fullscreen_media(w, h) end
     self:draw_sticker_pack(w, h)
     if self.sponsor_prompt then
         local prompt = self.sponsor_prompt
         local box_w = math.min(500, w - 32)
         local x = (w - box_w) / 2
-        if prompt.report then
+        if prompt.link then
+            local state = prompt.link
+            local top = math.floor((h - 140) / 2)
+            local invite = state.invite
+            ui.rect(x, top, box_w, 140, colors.panel, 8)
+            ui.printf(invite and "Telegram invite" or "Telegram link",
+                x + 12, top + 15, box_w - 24, "center", f.normal, colors.text)
+            local text = invite and (invite.title or "Join this chat?") or state.error or "Opening in SPgram…"
+            ui.printf(ui.fit(text, f.small, box_w - 28), x + 12, top + 54, box_w - 24, "center", f.small, colors.muted)
+            local hint = invite and (invite.creates_join_request and "{confirm} — Request to join    " or "{confirm} — Join    ") or ""
+            ui.button_hint(hint .. "{back} — Close", x + 12, top + 102, f.small, colors.muted, box_w - 24)
+        elseif prompt.report then
             local report = self.tg.channel_sponsor_report
             local options = report and report.options
             local selected = prompt.selected or 1
@@ -683,7 +701,6 @@ function messenger_screen:draw()
         self:draw_text_preview(w, h)
         self:draw_post_comments(w, h)
     end
-    if thread then self:draw_fullscreen_media(w, h) end
     if self.context_menu and self.context_menu.comment_thread then self:draw_context_menu(f, colors, w, h) end
     if thread then self:draw_reaction_menu(f, colors, w, h) end
     self:draw_html_preview(w, h)
@@ -795,7 +812,8 @@ function messenger_screen:draw_text_preview(w, h, preview)
     local panel_y = (h - panel_h) / 2
     ui.rect(panel_x, panel_y, panel_w, panel_h, colors.panel, 8)
     ui.outline(panel_x, panel_y, panel_w, panel_h, colors.accent, 8)
-    local title = tp.post_message and self.tg:post_title(tp.post_message) or tp.title or "Text file"
+    local title = tp.post_message and self.tg:post_title(tp.post_message)
+        or tp.author_message and "Message from " .. self.tg:sender_name(tp.author_message) or tp.title or "Text file"
     if tp.path then
         title = tp.path:match("([^/]+)$") or title
     elseif tp.message and tp.message.content and tp.message.content.document then
@@ -828,9 +846,23 @@ function messenger_screen:draw_text_preview(w, h, preview)
     local width = panel_w - 32
     if tp.message_text and (tp.wrap_width ~= width or tp.wrap_font ~= font) then
         tp.lines = wrapped_lines(font, tp.message_text, width)
-        tp.inline_links = helpers.link_ranges(tp.message_text, tp.entities)
+        tp.reader_links = tp.author_message and helpers.reader_links(tp.message_text, tp.entities) or nil
+        tp.inline_links = tp.reader_links or helpers.link_ranges(tp.message_text, tp.entities)
         tp.inline_emoji = helpers.custom_emoji_ranges(tp.message_text, tp.entities, tp.emoji_sticker)
         tp.line_starts = (tp.inline_links or tp.inline_emoji) and helpers.line_starts(tp.message_text, tp.lines)
+        tp.link_rows = nil
+        if tp.reader_links and #tp.reader_links > 0 then
+            tp.link_rows = {}
+            for index, link in ipairs(tp.reader_links) do
+                for row, line in ipairs(tp.lines) do
+                    local start = tp.line_starts[row]
+                    if start and start + #line > link[1] and start <= link[2] then
+                        tp.link_rows[index] = row
+                        break
+                    end
+                end
+            end
+        end
         tp.links_start = nil
         if tp.links and #tp.links > 0 then
             tp.lines[#tp.lines + 1] = ""
@@ -925,11 +957,13 @@ function messenger_screen:draw_text_preview(w, h, preview)
         local hit_y = math.max(top, photo_y)
         tp.photo_hit = {x = left, y = hit_y, w = width, h = math.max(0, math.min(bottom, photo_y + photo_h) - hit_y)}
     end
+    local selected_link = tp.link_index and tp.reader_links[tp.link_index]
     for i = math.max(1, skip + 1 - tp.media_end), math.min(#lines, last - tp.media_end) do
         local text = tp.message_text and lines[i] or ui.fit(lines[i], font, width)
         helpers.draw_link_line(text, tp.line_starts and tp.line_starts[i], tp.inline_links,
             left, top + (i + tp.media_end - skip - 1) * line_h, font,
-            tp.links_start and i >= tp.links_start and colors.accent or colors.text, tp.inline_emoji, self.custom_emoji_image)
+            tp.links_start and i >= tp.links_start and colors.accent or colors.text,
+            tp.inline_emoji, self.custom_emoji_image, selected_link)
     end
     tp.comment_hit = nil
     if tp.comment and content_rows < skip + visible then
@@ -955,7 +989,9 @@ function messenger_screen:draw_text_preview(w, h, preview)
         ui.printf(tp.note, left, footer_y - 31, width, "left", f.tiny, alpha_color(colors.text, 0.55))
     end
     local hint
-    if tp.quote_error then
+    if tp.link_index then
+        hint = string.format("↑/↓ — Link %d/%d   {confirm} — Open   {back} — Read", tp.link_index, #tp.reader_links)
+    elseif tp.quote_error then
         hint = tp.quote_error .. "   {back} — Close"
     elseif tp.quote_jump then
         hint = "Finding quoted message…   {back} — Cancel"
@@ -972,6 +1008,7 @@ function messenger_screen:draw_text_preview(w, h, preview)
     else
         hint = "{back} — Close"
     end
+    if tp.link_rows and not tp.link_index and not tp.quote_jump then hint = "{options} — Links   " .. hint end
     ui.button_hint(hint, left, footer_y, f.tiny, colors.muted)
     if tp.max_scroll > 0 then
         local track_h = visible * line_h
@@ -1568,6 +1605,7 @@ function messenger_screen:draw_fullscreen_media(w, h)
             local entry = video_entry
             if not entry then progress_text = "Video is unavailable."
             elseif entry.status == "error" then progress_text = entry.decode_error
+            elseif entry.status == "waiting" then progress_text = "Finishing previous video…"
             elseif entry.status == "decoding" then
                 progress_text = "Preparing video…"
                 if entry.converted_seconds and entry.duration > 0 then
@@ -1722,7 +1760,7 @@ function messenger_screen:context_menu_items(message)
     end
     local video_kind = self.tg:video_kind(message)
     local audio_kind = content_type == "messageAudio" or content_type == "messageVoiceNote"
-    local video_post = self:is_video_post(message, chat)
+    local video_post = self:is_video_post(message, chat) and self:has_post_details(message)
     if (video_kind and not video_post) or audio_kind then
         items[#items + 1] = {label = "Download and play", action = "play_media"}
     end
@@ -1764,7 +1802,7 @@ function messenger_screen:context_menu_items(message)
         end
     end
     local has_reply = self.tg:message_reply(message) or (album and helpers.album_reply(self.tg, album))
-    if msg_text ~= "" or comment or has_reply or video_post then
+    if msg_text:find("%S") or comment or has_reply or album then
         local label = comment and "Examine post" or (has_reply and "Read reply"
             or (content_type == "messageText" and "Read message" or "Read post"))
         items[#items + 1] = {label = label, action = "read_message"}
@@ -2024,46 +2062,17 @@ local function measure_message(self, chat, message, max_bubble, padding, wrap_wi
     end
     if message.forward_info then author_height = author_height + small_height + 2 end
     if self.tg:message_reply(message) then author_height = author_height + helpers.reply_card_height(f.tiny) + 4 end
-    local image, image_width, image_height = self:photo_geometry(message, max_bubble, padding, true)
-    local is_sticker = false
-    local is_animation = false
+    local _, image_width, image_height = self:photo_geometry(message, max_bubble, padding, true)
     local is_video = self.tg:video_kind(message) ~= nil
     local sticker_emoji = ""
-    local animation_label = ""
     local content_type = message.content and message.content["@type"]
-    local sticker_like_doc = false
-    if content_type == "messageDocument" then
-        local doc = message.content.document
-        if doc then
-            sticker_like_doc = (doc.file_name or ""):lower():match("%.tgs$") ~= nil
-        end
+    local is_animation = content_type == "messageAnimation"
+    local is_sticker = false
+    if not image_width then
+        _, image_width, image_height, sticker_emoji = self:sticker_geometry(message, max_bubble, padding, true)
+        is_sticker = image_width ~= nil
     end
-    if not image then
-        local simg, sw, sh, semoji = self:sticker_geometry(message, max_bubble, padding, true)
-        if simg then
-            image, image_width, image_height, sticker_emoji = simg, sw, sh, semoji
-            is_sticker = true
-        end
-    end
-    if not is_sticker and sticker_like_doc then
-        is_sticker = true
-        local simg, sw, sh, semoji = self:sticker_geometry(message, max_bubble, padding, true)
-        if simg then
-            image, image_width, image_height, sticker_emoji = simg, sw, sh, semoji
-        else
-            local aimg, aw, ah, alabel = self:animation_geometry(message, max_bubble, padding, true)
-            if aimg then
-                image, image_width, image_height, animation_label = aimg, aw, ah, alabel
-            end
-        end
-    end
-    if not image then
-        local aimg, aw, ah, alabel = self:animation_geometry(message, max_bubble, padding, true)
-        if aimg then
-            image, image_width, image_height, animation_label = aimg, aw, ah, alabel
-            is_animation = true
-        end
-    end
+    if is_animation then _, image_width, image_height = self:animation_geometry(message, max_bubble, padding, true) end
     local audio_post = content_type == "messageAudio" or content_type == "messageVoiceNote"
     local formatted = (is_video or audio_post) and message.content.caption
     local caption = formatted and formatted.text or ""
@@ -2072,7 +2081,7 @@ local function measure_message(self, chat, message, max_bubble, padding, wrap_wi
     if is_video then
         local _, card_h = self:video_card_size(max_bubble, padding)
         height = padding * 2 + author_height + card_h + post_text_height + small_height + 6
-    elseif image then
+    elseif image_width then
         local caption = (is_sticker or is_animation) and "" or self:photo_caption(message)
         local caption_height = 0
         if caption ~= "" then
@@ -2080,16 +2089,7 @@ local function measure_message(self, chat, message, max_bubble, padding, wrap_wi
             caption_height = #caption_lines * line_height + 4
         end
         height = padding * 2 + author_height + image_height + caption_height + small_height + 2
-    elseif is_sticker and sticker_emoji ~= "" then
-        local emoji_font = f.subtitle
-        local _, emoji_lines = emoji_font:getWrap(sticker_emoji, wrap_width)
-        local emoji_line_count = math.max(1, #emoji_lines)
-        height = padding * 2 + author_height + emoji_line_count * emoji_font:getHeight() + small_height + 2
-    elseif is_animation and animation_label ~= "" then
-        local small_font = f.small
-        local _, label_lines = small_font:getWrap(animation_label, wrap_width)
-        local label_line_count = math.max(1, #label_lines)
-        height = padding * 2 + author_height + label_line_count * small_font:getHeight() + small_height + 2
+        if is_sticker and sticker_emoji ~= "" then height = height + small_height + 4 end
     elseif message.content and message.content["@type"] == "messageAudio" then
         height = padding * 2 + author_height + 54 + post_text_height + small_height + 2
     elseif message.content and message.content["@type"] == "messageVoiceNote" then
@@ -2107,18 +2107,12 @@ local function measure_message(self, chat, message, max_bubble, padding, wrap_wi
     local reactions = helpers.reaction_rows(helpers.reaction_summary(message), f.tiny, max_bubble - padding * 2)
     height = height + helpers.reaction_rows_height(reactions)
     if helpers.comment_count(chat, message) then height = height + 27 end
-    local download_state = self.tg:media_download_state(message)
+    local download_state = not is_animation and self.tg:media_download_state(message)
     if download_state and download_state.status == "downloading" then
         height = height + 30
     end
     return height
 end
-
-local variable_media = {
-    messagePhoto = true, messageSticker = true, messageAnimation = true,
-    messageVideo = true, messageVideoNote = true, messageAudio = true,
-    messageVoiceNote = true, messageDocument = true,
-}
 
 local empty_history = {}
 
@@ -2127,7 +2121,8 @@ local function matches_history(snapshot, messages)
     for index, message in ipairs(messages) do
         local saved = snapshot[index]
         if saved.message ~= message or saved.content ~= message.content
-            or saved.interaction ~= message.interaction_info then return false end
+            or saved.interaction ~= message.interaction_info or saved.reply ~= message.reply_to
+            or saved.forward ~= message.forward_info then return false end
     end
     return true
 end
@@ -2144,23 +2139,24 @@ local function sponsored_height(text, font, width)
     return 78 + math.max(1, #lines) * font:getHeight()
 end
 
-function messenger_screen:conversation_layout(chat, messages, sponsored, bot, width, max_bubble, padding, wrap_width)
+function messenger_screen:conversation_layout(chat, messages, sponsored, bot, width, max_bubble, padding, wrap_width, unread_id)
     local f = self.fonts
     local me = self.tg.me and self.tg.me.id
     local channel = chat.type and chat.type["@type"] == "chatTypeSupergroup" and chat.type.is_channel
     local year = os.date("%Y")
     local layout = self.cached_conversation_layout
     if not layout or layout.chat ~= chat.id or layout.messages ~= messages or layout.sponsors ~= sponsored
-        or layout.bot ~= bot or layout.width ~= width or layout.me ~= me or layout.channel ~= channel
+        or layout.bot ~= bot or layout.width ~= width or layout.me ~= me or layout.channel ~= channel or layout.unread_id ~= unread_id
         or layout.year ~= year or layout.normal ~= f.normal or layout.small ~= f.small
         or layout.tiny ~= f.tiny or layout.subtitle ~= f.subtitle or not matches_history(layout.snapshot, messages) then
-        local items = conversation_items(messages)
+        local items = conversation_items(messages, unread_id)
         if not bot then items = sponsors.spaced_items(items, sponsored) end
         layout = {chat = chat.id, messages = messages, sponsors = sponsored, bot = bot, width = width,
-            channel = channel, me = me, year = year, normal = f.normal, small = f.small, tiny = f.tiny,
-            subtitle = f.subtitle, items = items, heights = {}, snapshot = {}, variable = {}, fixed_height = 0}
+            channel = channel, unread_id = unread_id, me = me, year = year, normal = f.normal, small = f.small, tiny = f.tiny,
+            subtitle = f.subtitle, items = items, heights = {}, snapshot = {}, total_height = 0}
         for index, message in ipairs(messages) do
-            layout.snapshot[index] = {message = message, content = message.content, interaction = message.interaction_info}
+            layout.snapshot[index] = {message = message, content = message.content, interaction = message.interaction_info,
+                reply = message.reply_to, forward = message.forward_info}
         end
         layout.tail_ad = not bot and sponsored and sponsored.spacing == 0 and sponsored.messages[1]
         layout.tail_text = sponsored_text(layout.tail_ad)
@@ -2174,6 +2170,8 @@ function messenger_screen:conversation_layout(chat, messages, sponsored, bot, wi
                 height = 28
             elseif item.action_label then
                 height = 24
+            elseif item.unread_divider then
+                height = f.tiny:getHeight() + 8
             elseif item.messages then
                 local media = self:album_layout(item.messages, max_bubble, padding)
                 local first = item.messages[1]
@@ -2189,25 +2187,14 @@ function messenger_screen:conversation_layout(chat, messages, sponsored, bot, wi
                 height = height + helpers.reaction_rows_height(reactions)
                 item.album_layout, item.reaction_rows = media, reactions
             else
-                local content = item.message.content
-                if content and variable_media[content["@type"]] then
-                    layout.variable[#layout.variable + 1] = i
-                else
-                    height = measure_message(self, chat, item.message, max_bubble, padding, wrap_width)
-                end
+                height = measure_message(self, chat, item.message, max_bubble, padding, wrap_width)
             end
             layout.heights[i] = height
-            layout.fixed_height = layout.fixed_height + (height or 0) + (item.channel_sponsor and 0 or 6)
+            layout.total_height = layout.total_height + (height or 0) + (item.channel_sponsor and 0 or 6)
         end
         self.cached_conversation_layout = layout
     end
-    local total = layout.fixed_height
-    for _, index in ipairs(layout.variable) do
-        local height = measure_message(self, chat, layout.items[index].message, max_bubble, padding, wrap_width)
-        layout.heights[index] = height
-        total = total + height
-    end
-    return layout, total
+    return layout, layout.total_height
 end
 
 function messenger_screen:draw_conversation(chat, left_width, right_width, h)
@@ -2339,7 +2326,8 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h)
     local wrap_width = math.min(max_bubble - padding * 2, 280)
     local line_height = font:getHeight()
     local small_height = small:getHeight()
-    local layout, total = self:conversation_layout(chat, messages, sponsored, bot, area_w, max_bubble, padding, wrap_width)
+    local unread_id = not self.search_active and history_state and history_state.unread_divider_id or nil
+    local layout, total = self:conversation_layout(chat, messages, sponsored, bot, area_w, max_bubble, padding, wrap_width, unread_id)
     local items, heights = layout.items, layout.heights
     local ad, text, tail = layout.tail_ad, layout.tail_text, layout.tail_height
     if tail ~= (self.sponsor_tail or 0) then
@@ -2374,6 +2362,8 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h)
             if matched then
                 local new_scroll = height_from_bottom - area_h
                 if focus_id then
+                    local previous = items[i - 1]
+                    if previous and previous.unread_divider then new_scroll = new_scroll + heights[i - 1] + 6 end
                     self.message_cursor_id = messages[1].id
                     self.display_cursor_id = self.message_cursor_id
                     history_state.initial_focus_id = nil
@@ -2437,6 +2427,21 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h)
                 if y <= area_y + area_h and y + height >= area_y then
                     draw_sponsor(card, sponsored_text(card), y, height, self.sponsor_inline == card.message_id)
                 end
+            end
+        elseif item.unread_divider then
+            local height = heights[i]
+            y = y - height - 6
+            if y + height >= area_y and y <= area_y + area_h then
+                local label = "Unread messages"
+                local center = area_x + area_w / 2
+                local half_label = f.tiny:getWidth(label) / 2 + 9
+                local line_w = math.max(0, area_w / 2 - half_label - 12)
+                local muted = colors.muted
+                local ink = {muted[1], muted[2], muted[3], 0.55}
+                local line_y = math.floor(y + height / 2)
+                ui.rect(center - half_label - line_w, line_y, line_w, 1, ink)
+                ui.rect(center + half_label, line_y, line_w, 1, ink)
+                ui.printf(label, area_x, y + 4, area_w, "center", f.tiny, ink)
             end
         elseif item.date_label then
             local date_height = 28
@@ -2636,9 +2641,8 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
     local is_downloading = download_state and download_state.status == "downloading"
     local image, image_width, image_height = self:photo_geometry(message, max_bubble, padding)
     local is_sticker = false
-    local is_animation = false
+    local is_animation = content_type == "messageAnimation"
     local is_video = self.tg:video_kind(message) ~= nil
-    local animation_label = ""
     local sticker_emoji = ""
     local is_selected = self.selected_messages[message.id] ~= nil
     local reactions = helpers.reaction_rows(
@@ -2650,39 +2654,19 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
     local is_document = (content_type == "messageDocument" or content_type == "messageAudio")
         and not is_sticker_like_doc and not self.tg:video_kind(message)
     local display_text = is_document and self.tg:document_label(message) or text
-    if not image then
+    if not image_width then
         local simg, sw, sh, semoji = self:sticker_geometry(message, max_bubble, padding)
-        if simg then
+        if sw then
             image, image_width, image_height, sticker_emoji = simg, sw, sh, semoji
             is_sticker = true
         end
     end
-    if not is_sticker and is_sticker_like_doc then
-        is_sticker = true
-        local simg, sw, sh, semoji = self:sticker_geometry(message, max_bubble, padding)
-        if simg then
-            image, image_width, image_height, sticker_emoji = simg, sw, sh, semoji
-        else
-            local aimg, aw, ah, alabel = self:animation_geometry(message, max_bubble, padding)
-            if aimg then
-                image, image_width, image_height, animation_label = aimg, aw, ah, alabel
-            end
-        end
-    end
-    if content_type == "messageAnimation" then
-        is_animation = true
-        local aimg, aw, ah, alabel = self:animation_geometry(message, max_bubble, padding)
-        if aimg then
-            image, image_width, image_height, animation_label = aimg, aw, ah, alabel
-        else
-            animation_label = "GIF · open to enlarge"
-        end
-    end
+    if is_animation then image, image_width, image_height = self:animation_geometry(message, max_bubble, padding) end
     local formatted_caption = message.content and message.content.caption
     local is_audio = content_type == "messageAudio" or content_type == "messageVoiceNote"
     local post_media = is_video or is_audio
     local caption = post_media and (formatted_caption and formatted_caption.text or "")
-        or ((is_sticker or is_animation) and "" or (image and self:photo_caption(message) or ""))
+        or ((is_sticker or is_animation) and "" or (image_width and self:photo_caption(message) or ""))
     local caption_lines = caption ~= "" and wrapped_lines(f.normal, caption, post_media and wrap_width or image_width) or {}
     local caption_links = formatted_caption and helpers.link_ranges(caption, formatted_caption.entities)
     local caption_emoji = formatted_caption and helpers.custom_emoji_ranges(caption, formatted_caption.entities)
@@ -2700,7 +2684,7 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
 
     if is_video then
         bubble_w = card_w + padding * 2
-    elseif image then
+    elseif image_width then
         bubble_w = image_width + padding * 2
     else
         lines = wrapped_lines(f.normal, display_text, is_document and math.max(32, wrap_width - 28) or wrap_width)
@@ -2784,7 +2768,7 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
         hit.media_kind, hit.media_x, hit.media_y = "video", x + padding, text_y
         hit.media_w, hit.media_h = card_w, card_h
         self.media_hits[#self.media_hits + 1] = hit
-    elseif image then
+    elseif image_width then
         local media_x, media_y = x + padding, text_y
         local content_kind = message.content and message.content["@type"]
 
@@ -2795,8 +2779,24 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
         if sw > 0 and sh > 0 then
             love.graphics.setScissor(sx, sy, sw, sh)
         end
-        local scale = image_width / image:getWidth()
-        love.graphics.draw(image, media_x, media_y, 0, scale, scale)
+        if not image or is_animation then ui.rect(media_x, media_y, image_width, image_height, colors.bg, 4) end
+        if image then
+            local scale = math.min(image_width / image:getWidth(), image_height / image:getHeight())
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(image, media_x + (image_width - image:getWidth() * scale) / 2,
+                media_y + (image_height - image:getHeight() * scale) / 2, 0, scale, scale)
+        else
+            local label = is_animation and "GIF" or is_sticker and "Sticker" or "Photo"
+            if image_height >= f.tiny:getHeight() and image_width >= f.tiny:getWidth(label) then
+                ui.printf(label, media_x, media_y + (image_height - f.tiny:getHeight()) / 2,
+                    image_width, "center", f.tiny, colors.muted)
+            end
+        end
+        if is_animation and is_downloading and download_state.progress and image_height >= 5 then
+            local bar_y = media_y + image_height - 4
+            ui.rect(media_x, bar_y, image_width, 4, colors.header, 2)
+            ui.rect(media_x, bar_y, image_width * download_state.progress, 4, colors.accent, 2)
+        end
         love.graphics.setScissor(self.conv_area_x or 0, self.conv_area_y or 0, self.conv_area_w or 9999, self.conv_area_h or 9999)
         if content_kind == "messagePhoto" then
             hit.media = true
@@ -2838,8 +2838,6 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
         if is_sticker and sticker_emoji ~= "" then
             ui.text(sticker_emoji, x + padding, text_y + 4, f.small, colors.accent)
         end
-    elseif is_sticker and sticker_emoji ~= "" then
-        ui.text(sticker_emoji, x + padding, text_y, f.small, colors.accent)
     elseif message.content and message.content["@type"] == "messageAudio" then
         local _, _, audio_entry = self.tg:media_file_for_message(message)
         self:draw_music_track(message, audio_entry, x + padding, text_y, bubble_w - padding * 2, colors)
@@ -2854,11 +2852,6 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
         hit.voice_x, hit.voice_y = x + padding, text_y
         hit.voice_w, hit.voice_h = bubble_w - padding * 2, 38
         draw_caption(x + padding, text_y + 44)
-    elseif is_animation and animation_label ~= "" then
-        ui.printf(animation_label, x + padding, text_y, wrap_width, "left", f.small, colors.muted)
-        hit.media_kind, hit.media_x, hit.media_y = "animation", x, y
-        hit.media_w, hit.media_h = bubble_w, height
-        self.media_hits[#self.media_hits + 1] = hit
     elseif is_document then
         local icon_x = x + padding + 2
         local icon_y = text_y + 2
@@ -2897,7 +2890,7 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
         end
     end
 
-    if is_downloading then
+    if is_downloading and not is_animation then
         local progress_y = y + body_height - padding - small_height - 25 - reactions_height
         local downloaded = self:format_bytes(download_state.downloaded)
         local label

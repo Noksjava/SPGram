@@ -198,7 +198,8 @@ assert(screen.fullscreen_media and tg.test_request["@type"] == "downloadFile")
 press(back)
 
 local private_type = chat.type
-for _, scenario in ipairs({{"chatTypeBasicGroup", "Read the post before playing."}, {"chatTypeSupergroup", ""}}) do
+for _, scenario in ipairs({{"chatTypeBasicGroup", "Read the post before playing."},
+    {"chatTypeSupergroup", "Read the channel post before playing."}}) do
     chat.type = {["@type"] = scenario[1], is_channel = scenario[1] == "chatTypeSupergroup"}
     video.content.caption = scenario[2] ~= "" and {text = scenario[2]} or nil
     local previous = tg.test_request
@@ -216,6 +217,17 @@ for _, scenario in ipairs({{"chatTypeBasicGroup", "Read the post before playing.
     press(back)
 end
 chat.type = {["@type"] = "chatTypeSupergroup", is_channel = true}
+video.content.caption = {text = " "}
+video.interaction_info = {reply_info = {reply_count = 3}}
+press(confirm)
+assert(screen.fullscreen_media and screen.fullscreen_media.message == video and not screen.text_preview)
+assert(tg.test_request["@type"] == "downloadFile" and screen:focused_comment_target() == video)
+press(back)
+screen:mousepressed(hit.media_x + 5, hit.media_y + 25, 1)
+assert(screen.fullscreen_media and screen.fullscreen_media.message == video and not screen.text_preview)
+press(back)
+video.interaction_info = nil
+video.content.caption = {text = "Read before playing."}
 screen:mousepressed(hit.media_x + 5, hit.media_y + 25, 1)
 assert(screen.text_preview and screen.text_preview.photo.message == video and not screen.fullscreen_media)
 press(back)
@@ -509,7 +521,7 @@ typed:keypressed("y")
 assert(not typed.language_menu and typed.visible)
 
 menu:enter()
-assert(menu:items()[menu.selected_item].id == "profile")
+assert(menu:items()[menu.selected_item].id == "my_profile")
 menu:keypressed("up")
 assert(menu:items()[menu.selected_item].id == "exit_app" and not menu.quit_confirm)
 local event = love.event
@@ -613,6 +625,15 @@ screen:draw_text_preview(640, 480)
 assert(drawn.Opening and not drawn[post_url], "Link label must appear in place")
 press(back)
 assert(not screen.text_preview and screen:focused_message() == post)
+local single_photo = {id = 112, chat_id = 42, is_channel_post = true,
+    interaction_info = {reply_info = {reply_count = 2}}, content = {["@type"] = "messagePhoto"}}
+chat.type = {["@type"] = "chatTypeSupergroup", is_channel = true}
+screen.nav_messages, screen.message_cursor_id = {single_photo}, single_photo.id
+press(confirm)
+assert(screen.fullscreen_media and screen.fullscreen_media.message == single_photo and not screen.text_preview)
+assert(screen:focused_comment_target() == single_photo)
+press(back)
+screen.nav_messages, screen.message_cursor_id = {post}, post.id
 chat.type["@type"] = "chatTypePrivate"
 press(confirm)
 assert(screen.fullscreen_media.message == post and not screen.text_preview)
@@ -1282,3 +1303,104 @@ do
     assert(requests == 1)
 end
 print("Protected forwarding and disappearing media checks passed")
+
+do
+    screen.text_preview, screen.fullscreen_media, tg.comments_thread = nil, nil, nil
+    chat.type = {["@type"] = "chatTypePrivate", user_id = 81}
+    tg.users[81] = {id = 81, first_name = "Fixture Author"}
+    local text = "See @fixture and t.me/fixture_group. Site"
+    local site_start = text:find("Site", 1, true)
+    local message = {id = 999, chat_id = 42, sender_id = {["@type"] = "messageSenderUser", user_id = 81},
+        content = {["@type"] = "messageText", text = {text = text, entities = {
+            {offset = site_start - 1, length = 4, type = {["@type"] = "textEntityTypeTextUrl", url = "https://example.org"}},
+        }}}}
+    assert(screen:read_message(message))
+    screen:draw_text_preview(640, 480)
+    local reader = screen.text_preview
+    assert(drawn["Message from Fixture Author"] and #reader.reader_links == 3)
+    screen:keypressed("y")
+    assert(reader.link_index == 1)
+    screen:keypressed("return")
+    local pending = screen.sponsor_prompt.link
+    assert(pending.prefer_profile and not screen.text_preview)
+    pending.user_id = 81
+    screen:update_sponsor_link()
+    assert(screen.text_preview == reader and screen.wants_profile_user_id == 81)
+    screen.wants_profile_user_id = nil
+    screen:keypressed("down")
+    assert(reader.link_index == 2 and reader.reader_links[2].url == "t.me/fixture_group")
+    screen:keypressed("down")
+    screen:keypressed("return")
+    assert(screen.text_preview.title == "External link" and screen.text_preview.links[1] == "https://example.org")
+    screen:keypressed("escape")
+    assert(screen.text_preview == reader)
+    screen:keypressed("escape")
+    assert(not reader.link_index)
+    screen:keypressed("escape")
+    assert(not screen.text_preview)
+
+    local menu = require("src.features.auth.ui.settings_screen").new({}, tg, {
+        accounts = function() return {{key = "account_1", title = "Fixture Author"}}, "account_1" end,
+    })
+    for _, item in ipairs(menu:items()) do assert(item.id ~= "account:account_1" and item.id ~= "logout") end
+    menu:activate_item(menu:items()[2])
+    assert(menu.section.label == "My profile")
+    local account_items = menu:items()
+    assert(account_items[1].id == "profile" and account_items[2].id == "account:account_1"
+        and account_items[3].id == "add_account" and account_items[4].id == "logout")
+end
+print("Reader sender labels, link selection, and account submenu passed")
+
+do
+    local gif = {id = 1004, chat_id = 42, is_channel_post = true,
+        interaction_info = {reply_info = {reply_count = 2}},
+        content = {["@type"] = "messageAnimation", animation = {width = 720, height = 980, animation = {id = 3346}}}}
+    chat.type = {["@type"] = "chatTypeSupergroup", is_channel = true}
+    tg.messages[42], tg.current_chat_id = {gif}, 42
+    tg.animation_by_message[tg:media_message_key(gif)] = 3346
+    local entry = {status = "remote"}
+    tg.animations[3346] = entry
+    tg.ensure_animation = noop
+    tg.animation_image = function() return entry.image end
+    screen.model.scroll, screen.smooth_scroll = 0, 0
+    local function bounds()
+        screen:draw_conversation(chat, 204, 436, 480)
+        local position, hit, comments = screen.nav_pos[gif.id], screen.media_hits[1], screen.comment_hits[1]
+        assert(position and hit and comments)
+        return {position.y, position.h, hit.media_x, hit.media_y, hit.media_w, hit.media_h, comments.y}
+    end
+    local resting = bounds()
+    drawn["0 KB loaded"] = nil
+    entry.status = "downloading"
+    local pending = bounds()
+    assert(not drawn["0 KB loaded"])
+    tg:handle_animation_file({id = 3346, size = 1024, ["local"] = {downloaded_prefix_size = 512}}, entry)
+    assert(entry.downloaded_bytes == 512 and entry.download_progress == 0.5)
+    entry.image = {getWidth = function() return 207 end, getHeight = function() return 128 end}
+    local with_thumbnail = bounds()
+    entry.status = "ready"
+    local ready = bounds()
+    for index, value in ipairs(resting) do
+        assert(pending[index] == value and with_thumbnail[index] == value and ready[index] == value)
+    end
+
+    local pixel
+    tg.photo_image = function() return pixel, 48, 128 end
+    tg.sticker_image = function() return pixel, 128, 48 end
+    tg.ensure_photo, tg.ensure_sticker, tg.ensure_animated_sticker = noop, noop, noop
+    for _, content in ipairs({
+        {["@type"] = "messagePhoto", photo = {sizes = {{width = 320, height = 280, photo = {id = 3350}}}},
+            caption = {text = "The photo stays in place."}},
+        {["@type"] = "messageSticker", sticker = {width = 320, height = 420, sticker = {id = 3351}}},
+    }) do
+        gif.content = content
+        pixel = nil
+        local empty = bounds()
+        local cached = screen.cached_conversation_layout
+        pixel = {getWidth = function() return 48 end, getHeight = function() return 128 end}
+        local loaded = bounds()
+        assert(screen.cached_conversation_layout == cached)
+        for index, value in ipairs(empty) do assert(loaded[index] == value) end
+    end
+end
+print("Photo, sticker and GIF layout stays fixed as textures and progress arrive")

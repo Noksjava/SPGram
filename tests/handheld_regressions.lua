@@ -123,6 +123,28 @@ event("chat", {["@extra"] = "chat_search_detail:2:15", id = 15, chat_lists = {},
 assert(listed(15, listings.search_chat_results) and not listed(15, listings.chats))
 print("Chat list membership, archive moves, removals, legacy positions, and search-only chats passed")
 
+do
+    local json = require("dkjson")
+    local sent, rebuilds = 0, 0
+    local out = {pop = function()
+        if sent == 150 then return end
+        sent = sent + 1
+        return json.encode({["@type"] = "updateChatTitle", chat_id = 11, title = "Title " .. tostring(sent)})
+    end}
+    local rebuild = client.rebuild_chats
+    listings.rebuild_chats = function(self)
+        if not self.defer_chat_lists then rebuilds = rebuilds + 1 end
+        return rebuild(self)
+    end
+    listings.out_channel, listings.foreground_media = out, "video"
+    listings:poll()
+    assert(sent == 150 and rebuilds == 0 and listings.pending_main_list)
+    assert(listings.chats_by_id[11].title == "Title 150")
+    listings.foreground_media = nil
+    listings:poll()
+    assert(rebuilds == 1 and not listings.pending_main_list)
+end
+
 local video = {id = 13, content = {["@type"] = "messageVideo",
     video = {duration = 600, video = {id = 123, size = 1200}},
     alternative_videos = {{codec = "h264", width = 640, height = 360, video = {id = 124, size = 600}}}}}
@@ -144,6 +166,7 @@ tg:handle({["@type"] = "error", ["@extra"] = tg.active_video.download_token, cod
 assert(tg:request_media_playback(video) and tg.active_video.file_id == 123)
 
 tg.active_video.status, tg.active_video.name = "decoding", "spgram-video-1.ogv"
+tg.video_conversion, tg.video_sequence = tg.active_video, 1
 local progress_path = os.tmpname()
 local progress_file = assert(io.open(progress_path, "wb"))
 progress_file:write("frame=120\nout_time_us=8000000\nprogress=continue\nframe=135\nout_time_us=9000000\n")
@@ -152,14 +175,61 @@ tg.active_video.progress_path = progress_path
 tg:poll_video_progress(1)
 os.remove(progress_path)
 assert(tg.active_video.converted_seconds == 9)
+assert(tg.active_video.converted_frames == 135)
+local old_video = tg.active_video
+local original_path = os.tmpname()
+local original_file = assert(io.open(original_path, "wb"))
+original_file:write("video fixture")
+original_file:close()
+old_video.source_path = original_path
+local job
+tg.ensure_media_decoder = function() end
+tg.anim_in = {push = function(_, value) job = value end}
+love.filesystem.getSaveDirectory = function() return "." end
+count = #requests
 tg:stop_media_playback(video)
 assert(not tg.active_video and not tg.videos[123] and removed.cancelled == "spgram-video-1.ogv.cancel")
+assert(tg.video_conversion == old_video and #requests == count)
+video.content.alternative_videos = nil
+assert(tg:request_media_playback(video) and tg.active_video.status == "waiting")
+assert(not job and #requests == count)
+tg:finish_video_conversion({name = "spgram-video-1.ogv", ok = true})
+assert(job and job.type == "convert_video" and job.name == "spgram-video-2.ogv")
+assert(tg.active_video.status == "decoding" and #requests == count)
+assert(removed[#removed - 2] == "spgram-video-1.ogv.cancel"
+    and removed[#removed - 1] == "spgram-video-1.ogv.progress" and removed[#removed] == "spgram-video-1.ogv")
+
+local position, playing, seeks = 1, true, {}
+local decoder = {
+    tell = function() return position end,
+    isPlaying = function() return playing end,
+    seek = function(_, target) seeks[#seeks + 1] = target; position = target end,
+    pause = function() playing = false end,
+    play = function() playing = true end,
+    release = function() playing = false end,
+}
+love.graphics.newVideo = function() return decoder end
+tg.active_video.converted_frames = 120
+tg:finish_video_conversion({name = job.name, ok = true})
+assert(tg.active_video.duration == 8 and playing)
+assert(tg:seek_media_playback(video, 11))
+assert(tg:media_playback_state(video) == 7.65)
+assert(tg:seek_media_playback(video, -2.35))
+assert(tg:seek_media_playback(video, 10))
+tg:poll_video_seek(1.1)
+assert(#seeks == 0)
+tg:poll_video_seek(1.2)
+assert(#seeks == 1 and seeks[1] == 7.65 and playing)
+assert(tg:seek_media_playback(video, 0))
+tg:stop_media_playback(video)
+tg:poll_video_seek(2)
+assert(#seeks == 1 and not playing)
+tg:collect_video_source(2)
 assert(requests[#requests - 1].data["@type"] == "cancelDownloadFile")
 assert(requests[#requests].data["@type"] == "deleteFile")
-tg:finish_video_conversion({name = "spgram-video-1.ogv", ok = true})
-assert(removed[2] == "spgram-video-1.ogv.cancel" and removed[3] == "spgram-video-1.ogv.progress"
-    and removed[4] == "spgram-video-1.ogv")
-video.content.alternative_videos = nil
+os.remove(original_path)
+print("Short video seeks are coalesced, bounded by actual frame count, and cancelled on close. Immediate reopen waits for the previous converter.")
+
 video.content.video.video.size = 300 * 1024 * 1024
 count = #requests
 assert(not tg:request_media_playback(video) and #requests == count)
@@ -192,6 +262,7 @@ progress_output:write("frame=135\nout_time_us=9000000\nprogress=end\n")
 progress_output:close()
 attachment_video.name = "spgram-video-2.ogv"
 attachment_video.status, attachment_video.progress_path = "decoding", attachment_progress
+tg.video_conversion = attachment_video
 love.graphics.newVideo = function()
     return {play = function() end, pause = function() end, release = function() end}
 end
@@ -199,6 +270,7 @@ tg:finish_video_conversion({name = attachment_video.name, ok = true})
 os.remove(attachment_progress)
 assert(attachment_video.status == "ready" and attachment_video.duration == 9)
 screen:close_media_viewer()
+tg:collect_video_source(2)
 assert(not tg.active_video and requests[#requests].data["@type"] == "deleteFile")
 
 for _, filename in ipairs({"fixture.M3U8", "fixture.mp4.txt"}) do
@@ -285,15 +357,18 @@ local menu = setmetatable({fonts = {normal = {getHeight = function() return 17 e
         map_key = function() return true end,
         calibrate_faces = function() end,
     }}, {__index = settings})
+local settings_height = love.graphics.getHeight
+love.graphics.getHeight = function() return 380 end
 menu:wheelmoved(0, -1)
 assert(menu.selected_item == 2 and menu.scroll_offset == 1)
 menu:wheelmoved(0, 1)
 assert(menu.scroll_offset == 0)
+love.graphics.getHeight = settings_height
 local sections = {
     {"visual", "performance"}, {"sounds", "message_sound"}, {"language", "keyboard_languages"},
     {"advanced", "reconnect"}, {"controls", "map_keys"},
 }
-assert(menu:items()[1].id == "exit_app" and menu:items()[2].id == "profile")
+assert(menu:items()[1].id == "exit_app" and menu:items()[2].id == "my_profile")
 for i, expected in ipairs(sections) do
     menu:keypressed("down")
     assert(menu.selected_item == i + 2 and menu:items()[i + 2].id == expected[1])
@@ -532,6 +607,34 @@ for _ = 1, 10 do
     avatars:poll_avatar_images()
 end
 assert(avatar_uploads == before)
+
+avatars.users[322] = {profile_photo = {small = {id = 322, ["local"] = {
+    is_downloading_completed = true, path = "pruned.jpg",
+}}}}
+local first_retry = #avatar_downloads
+avatars.load_image = function(_, id, path, storage)
+    if path == "pruned.jpg" then return "missing" end
+    storage[id].image = {}
+    storage[id].status = "ready"
+end
+assert(not avatars:user_photo_image(322))
+avatars:poll_avatar_images()
+assert(#avatar_downloads == first_retry)
+now = now + 3
+avatars:user_photo_image(322)
+avatars:poll_avatar_images()
+assert(#avatar_downloads == first_retry + 1 and avatar_downloads[#avatar_downloads].file_id == 322)
+local failed_token = avatars.avatar_photos[322].download_token
+assert(avatars:fail_avatar_download(failed_token))
+now = now + 6
+avatars:user_photo_image(322)
+avatars:poll_avatar_images()
+assert(#avatar_downloads == first_retry + 2 and avatars:fail_avatar_download(failed_token))
+assert(avatars.avatar_photos[322].status == "downloading")
+avatars:load_avatar(322, "pruned.jpg")
+avatars.load_image = function(_, id, _, storage) storage[id].image = {}; storage[id].status = "ready" end
+avatars:poll_avatar_images()
+assert(avatars:user_photo_image(322))
 
 local images, alive = {}, 0
 local photos = setmetatable({photos = images, load_image = function(_, id, _, storage)

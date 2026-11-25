@@ -15,6 +15,7 @@ local auth_screen = require("src.features.auth.ui.auth_screen")
 local messenger_screen = require("src.features.chat.ui.chat_screen")
 local profile_screen = require("src.features.auth.ui.profile_screen")
 local settings_screen = require("src.features.auth.ui.settings_screen")
+local release_screen = require("src.features.auth.ui.release_screen")
 local controls_screen = require("src.features.help.ui.controls_screen")
 local performance = require("src.shared.system.performance")
 
@@ -25,8 +26,9 @@ local fonts
 local settings_scale = 0.9
 local settings_open = false
 local settings_slide
+local releases, launch_releases_open
 local SETTINGS_SLIDE_TIME = 0.24
-local controls_return, face_setup_return
+local controls_return, face_setup_return, profile_return
 
 local handle_key
 
@@ -142,6 +144,7 @@ local function show_profile(chat_id, user_id)
         screens.messenger.keyboard.visible = false
     end
     local profile = screens.profile
+    profile_return = current == screens.settings and current or screens.messenger
     profile.is_me = tg.me and (user_id == tg.me.id or (chat_id ~= nil and chat_id == tg.saved_chat_id)) or false
     profile.chat_id = not profile.is_me and chat_id or nil
     profile.user_id = profile.is_me and tg.me.id or user_id
@@ -155,6 +158,7 @@ local function show_my_profile()
         screens.messenger.keyboard.visible = false
     end
     local profile = screens.profile
+    profile_return = current == screens.settings and current or screens.messenger
     profile.chat_id = nil
     profile.user_id = tg and tg.me and tg.me.id
     profile.is_me = true
@@ -389,7 +393,15 @@ function love.load()
     if locked then
         for _, name in ipairs(love.filesystem.getDirectoryItems("")) do
             if name:match("^spgram%-video%-%d+%.ogv$") or name:match("^spgram%-video%-%d+%.ogv%.cancel$")
-                or name:match("^spgram%-video%-%d+%.ogv%.progress$") then
+                or name:match("^spgram%-video%-%d+%.ogv%.progress$")
+                or name:match("^spgram%-audio%-%d+%.ogg$") or name:match("^spgram%-audio%-%d+%.ogg%.cancel$") then
+                love.filesystem.remove(name)
+            elseif name:match("^anim_animation_%d+_%a+$") or name:match("^anim_sticker_%d+_%a+$") then
+                for _, frame in ipairs(love.filesystem.getDirectoryItems(name)) do
+                    if frame:match("^f_%d+%.png$") or frame == "tgs.gif" then
+                        love.filesystem.remove(name .. "/" .. frame)
+                    end
+                end
                 love.filesystem.remove(name)
             end
         end
@@ -403,6 +415,7 @@ function love.load()
         tg.auth_error = reason
     end
 
+    releases = release_screen.new(fonts)
     screens = {
         auth = auth_screen.new(fonts, tg, {
             open_face_setup = open_face_setup,
@@ -415,6 +428,7 @@ function love.load()
         messenger = messenger_screen.new(fonts, tg),
         profile = profile_screen.new(fonts, tg),
         settings = settings_screen.new(fonts, tg, {
+            releases = releases,
             accounts = function() return account_store.accounts, account_store.active_key end,
             switch_account = function(key) pending_account_key = key end,
             add_account = function() pending_account_key = next_account_key() end,
@@ -460,6 +474,7 @@ function love.load()
     current = screens.auth
     current:enter()
     startup_intro = intro_screen.new(fonts.subtitle, media_settings.get("startup_intro"))
+    if releases and media_settings.get("check_updates_on_launch") then releases:start("check", true) end
 end
 
 local function settings_slide_progress()
@@ -505,6 +520,7 @@ local function update_app(dt)
         screens.messenger = messenger_screen.new(fonts, tg)
         screens.profile = profile_screen.new(fonts, tg)
         screens.settings = settings_screen.new(fonts, tg, {
+            releases = releases,
             accounts = function() return account_store.accounts, account_store.active_key end,
             switch_account = function(k) pending_account_key = k end,
             add_account = function() pending_account_key = next_account_key() end,
@@ -531,6 +547,8 @@ local function update_app(dt)
         current:enter()
     end
     if tg then
+        local viewer = current == screens.messenger and screens.messenger.fullscreen_media
+        tg.foreground_media = viewer and viewer.kind or nil
         tg:update(dt)
     end
 
@@ -600,6 +618,7 @@ local function update_app(dt)
         for _, s in pairs(screens) do
             if s.fonts then s.fonts = fonts end
         end
+        if releases then releases.fonts = fonts end
     end
 
     if love.mouse and media_settings then
@@ -644,6 +663,22 @@ function love.update(dt)
     local started = performance_trace.clock()
     update_app(dt)
     if startup_intro and startup_intro:update(tg, sign_in_only) then startup_intro = nil end
+    if releases then
+        releases:poll()
+        if releases.launch_offer and not startup_intro and not settings_slide
+            and media_settings.get("check_updates_on_launch") then
+            local chat_list = current == screens.messenger and not tg.current_chat_id
+                and not current.header_focus and not current.context_menu and not current.search_active
+            local sign_in = current == screens.auth and tg.auth_state == "authorizationStateWaitPhoneNumber"
+                and not tg.qr_link and not tg.qr_request_pending and not tg.auth_input_pending
+                and not current:keyboard_mode()
+            if chat_list or sign_in then
+                releases.launch_offer = false
+                releases.selection = releases.available and 2 or 1
+                launch_releases_open = true
+            end
+        end
+    end
     performance_trace.update(started, dt)
 end
 
@@ -655,7 +690,9 @@ function love.draw()
         performance_trace.draw(started, tg)
         return
     end
-    if settings_slide and current == screens.settings then
+    if launch_releases_open then
+        releases:draw()
+    elseif settings_slide and current == screens.settings then
         local progress = settings_slide_progress()
         local width, height = ui.width(), ui.height()
         screens.messenger:draw()
@@ -690,6 +727,10 @@ function love.draw()
 end
 
 handle_key = function(key, from_gamepad)
+    if launch_releases_open then
+        if releases:keypressed(key) == "back" then launch_releases_open = false end
+        return
+    end
     if settings_slide and settings_slide.finish == 0 and current == screens.settings then return end
     if key == "tab" and current ~= screens.settings then
         if current == screens.messenger and current.fullscreen_media and current.fullscreen_media.kind == "audio" then
@@ -770,7 +811,7 @@ handle_key = function(key, from_gamepad)
     end
 
     if key == "escape" and current == screens.profile and current:keypressed(key) == "back" then
-        current = screens.messenger
+        current, profile_return = profile_return or screens.messenger, nil
         return
     elseif key == "escape" and current == screens.profile then
         return
@@ -892,17 +933,20 @@ function love.gamepadaxis(_, axis, value)
 end
 
 function love.textinput(text)
+    if launch_releases_open then return end
     if startup_intro then return end
     if current.textinput then current:textinput(text) end
 end
 
 function love.wheelmoved(x, y)
+    if launch_releases_open then return end
     if startup_intro then return end
     if settings_slide and current == screens.settings then return end
     if current.wheelmoved then current:wheelmoved(x, y) end
 end
 
 function love.mousepressed(x, y, button)
+    if launch_releases_open then return end
     if startup_intro then return end
     if settings_slide and current == screens.settings then return end
     if current.mousepressed then current:mousepressed(x, y, button) end
@@ -928,8 +972,8 @@ function love.quit()
     if tg then
         local stopped = tg:shutdown()
         if not stopped then
-            if current and current.releases then
-                current.releases.status = "TDLib is still closing. Try again in a moment."
+            if releases and (launch_releases_open or (current and current.release_open)) then
+                releases.status = "TDLib is still closing. Try again in a moment."
             end
             return true
         end

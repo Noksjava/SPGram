@@ -362,6 +362,13 @@ return function(messenger_screen, layout)
             (kind.is_channel or kind["@type"] == "chatTypeSupergroup" or kind["@type"] == "chatTypeBasicGroup"))
     end
 
+    function messenger_screen:has_post_details(message)
+        local content = message and message.content or {}
+        local formatted = content.caption or content.text
+        return (formatted and formatted.text and formatted.text:find("%S") ~= nil)
+            or self.tg:message_reply(message) ~= nil
+    end
+
     function messenger_screen:read_message(message, photo)
         local content = message.content or {}
         local formatted = content.caption or content.text or {text = content.emoji}
@@ -382,7 +389,7 @@ return function(messenger_screen, layout)
         end
         if self.keyboard then self.keyboard.visible = false end
         self.text_preview = {message_text = formatted.text or "", entities = formatted.entities,
-            title = (content.caption or comment or video_post) and "Post" or "Message",
+            author_message = message,
             scroll = 0, photo = photo, comment = comment, reply_message = reply and message,
             emoji_sticker = content.animated_emoji and content.animated_emoji.sticker,
             post_message = is_post and message or nil}
@@ -398,16 +405,19 @@ return function(messenger_screen, layout)
 
     function messenger_screen:open_photo_message(message, media_index)
         if not self:can_open_media(message) then return end
+        local group = self.nav_albums and self.nav_albums[message.id]
+        if group then self:open_album_post(group, message); return end
         local chat = self.model:current_chat()
         local kind = chat and chat.type and chat.type["@type"]
         if kind == "chatTypeSupergroup" or kind == "chatTypeBasicGroup" then
             self.tg:ensure_photo(message, true)
             local photo = {message = message, index = media_index}
-            if self:read_message(message, photo) then return end
+            if self:has_post_details(message) and self:read_message(message, photo) then return end
             local album = helpers.media_album_id(message)
             if album then
                 for _, item in ipairs(self.tg:get_messages(chat.id)) do
-                    if helpers.media_album_id(item) == album and self:read_message(item, photo) then return end
+                    if helpers.media_album_id(item) == album and self:has_post_details(item)
+                        and self:read_message(item, photo) then return end
                 end
             end
         end
@@ -417,7 +427,8 @@ return function(messenger_screen, layout)
     function messenger_screen:open_video_message(message)
         local album = self.nav_albums and self.nav_albums[message.id]
         if album then self:open_album_post(album, message)
-        elseif self:is_video_post(message, self.model:current_chat()) then self:read_message(message)
+        elseif self:is_video_post(message, self.model:current_chat()) and self:has_post_details(message) then
+            self:read_message(message)
         else self:open_video(message) end
     end
 
@@ -434,7 +445,7 @@ return function(messenger_screen, layout)
         if not self.tg:video_kind(selected) then self.tg:ensure_photo(selected, true) end
         if self.keyboard then self.keyboard.visible = false end
         self.text_preview = {message_text = caption and caption.text or "", entities = caption and caption.entities,
-            title = "Post", post_message = is_post and first or nil, scroll = 0, album = album, album_index = index,
+            author_message = first, post_message = is_post and first or nil, scroll = 0, album = album, album_index = index,
             photo = {message = selected},
             comment = helpers.album_comment_target(self.model:current_chat(), album),
             reply_message = helpers.album_reply(self.tg, album)}
@@ -470,6 +481,67 @@ return function(messenger_screen, layout)
             self.tg:focus_quoted_message(request)
             self.composer_focus, self.sponsor_focus = nil, nil
             self.text_preview = nil
+        end
+    end
+
+    function messenger_screen:update_sponsor_link()
+        local prompt = self.sponsor_prompt
+        local state = prompt and prompt.link
+        if not state or state.error then return end
+        if state.user_id then
+            self.text_preview = prompt.reader
+            self.sponsor_prompt, self.tg.sponsor_link = nil, nil
+            self.wants_profile_user_id = state.user_id
+            return
+        end
+        if state.chat_id and state.message_id and not state.focus then
+            state.focus = self.tg:find_quoted_message({chat_id = state.chat_id},
+                {chat_id = state.chat_id, message_id = state.message_id})
+            state.deadline = love.timer.getTime() + 12
+            if not state.focus then state.error = "This Telegram message is unavailable."; return end
+        end
+        local focus = state.focus
+        if state.chat_id and (not focus or focus.page or focus.loaded) then
+            self.sponsor_prompt, self.tg.sponsor_link = nil, nil
+            self.sponsor_focus, self.sponsor_inline = nil, nil
+            self:select_chat(state.chat_id, focus ~= nil)
+            if focus then self.tg:focus_quoted_message(focus) end
+        elseif focus and focus.error then
+            state.error = "This Telegram message is unavailable."
+        elseif not state.invite and love.timer.getTime() > state.deadline then
+            state.error = "Telegram did not respond. Try again."
+        end
+    end
+
+    function messenger_screen:focus_reader_link(preview, index)
+        index = math.max(1, math.min(#preview.reader_links, index))
+        preview.link_index = index
+        preview.quote_selected, preview.comment_selected = false, false
+        local row = (preview.link_rows[index] or 1) + (preview.media_end or 0)
+        if row <= preview.scroll or row > preview.scroll + preview.page_size then
+            preview.scroll = math.max(0, math.min(preview.max_scroll, row - math.min(2, preview.page_size)))
+        end
+    end
+
+    function messenger_screen:open_reader_link(preview)
+        local link = preview.reader_links[preview.link_index]
+        if not link then return end
+        if link.user_id then
+            self.wants_profile_user_id = link.user_id
+            return
+        end
+        local url = link.url
+        if type(url) ~= "string" or url == "" then return end
+        if not url:match("^%a[%w+.-]*:") and sponsored.telegram_link("https://" .. url) then
+            url = "https://" .. url
+        end
+        local state = self.tg:open_sponsor_link(url, love.timer.getTime(), true)
+        if state then
+            self.sponsor_prompt = {link = state, reader = preview}
+            self.text_preview = nil
+        else
+            self.text_preview = {title = "External link", message_text = "Visit this address to open the link.",
+                links = {url}, note = "SPgram has no web browser.", scroll = 0, return_preview = preview}
         end
     end
 
@@ -698,6 +770,7 @@ return function(messenger_screen, layout)
             self.tg:close_inline_media()
         end
         self.fullscreen_media, self.player_controls = nil, nil
+        self.fullscreen_hint_time = nil
     end
 
     function messenger_screen:activate_focused_message()
@@ -962,10 +1035,21 @@ return function(messenger_screen, layout)
             return
         end
         if self.text_preview and not self.fullscreen_media then
-            local page = self.text_preview.page_size or 1
+            local preview = self.text_preview
+            local page = preview.page_size or 1
             if key == "escape" then
-                self.tg.quote_lookup = nil
-                self.text_preview = nil
+                if preview.link_index and not preview.return_preview then
+                    preview.link_index = nil
+                else
+                    self.tg.quote_lookup = nil
+                    self.text_preview = preview.return_preview
+                end
+            elseif (key == "y" or key == "options") and preview.link_rows and #preview.reader_links > 0 then
+                if preview.link_index then preview.link_index = nil else self:focus_reader_link(preview, 1) end
+            elseif preview.link_index then
+                if key == "up" then self:focus_reader_link(preview, preview.link_index - 1)
+                elseif key == "down" then self:focus_reader_link(preview, preview.link_index + 1)
+                elseif key == "return" or key == "kpenter" then self:open_reader_link(preview) end
             elseif (key == "return" or key == "kpenter") and self.text_preview.quote_selected then
                 self:jump_from_quote()
             elseif (key == "return" or key == "kpenter") and self.text_preview.comment_selected then
@@ -1008,7 +1092,17 @@ return function(messenger_screen, layout)
         end
         if self.sponsor_prompt then
             local prompt = self.sponsor_prompt
-            if prompt.report then
+            if prompt.link then
+                local state = prompt.link
+                if key == "escape" then
+                    if self.tg.quote_lookup == state.focus then self.tg.quote_lookup = nil end
+                    self.sponsor_prompt, self.tg.sponsor_link = nil, nil
+                    self.text_preview = prompt.reader
+                elseif (key == "return" or key == "kpenter") and state.invite then
+                    self.tg:join_sponsor_invite(state, love.timer.getTime())
+                end
+                return
+            elseif prompt.report then
                 local report = self.tg.channel_sponsor_report
                 local options = report and report.options
                 if key == "escape" then self.sponsor_prompt = nil end
@@ -1071,10 +1165,16 @@ return function(messenger_screen, layout)
                 self.sponsor_inline = nil
                 if not inline and not self.sponsor_bot then self.model.scroll = self.sponsor_tail or 0 end
             elseif key == "return" or key == "kpenter" then
-                local url = ad and self.tg:click_channel_sponsor(self.tg.current_chat_id, ad.message_id, love.timer.getTime())
+                local now = love.timer.getTime()
+                local url = ad and self.tg:click_channel_sponsor(self.tg.current_chat_id, ad.message_id, now)
                 if url then
-                    self.text_preview = {title = "Sponsored link", message_text = "Visit this address for more information.",
-                        links = {url}, note = "SPgram has no web browser. Enter the address on another device to visit the site.", scroll = 0}
+                    local state = self.tg:open_sponsor_link(url, now)
+                    if state then
+                        self.sponsor_prompt = {link = state}
+                    else
+                        self.text_preview = {title = "Sponsored link", message_text = "Visit this address for more information.",
+                            links = {url}, note = "SPgram has no web browser. Enter the address on another device to visit the site.", scroll = 0}
+                    end
                 end
             elseif key == "down" then
                 self.model.scroll = 0
@@ -1646,7 +1746,7 @@ return function(messenger_screen, layout)
             end
         end
         if self.text_preview and not self.fullscreen_media then
-            if button == 2 then self.text_preview = nil
+            if button == 2 then self.text_preview = self.text_preview.return_preview
             elseif button == 1 then
                 local quote = self.text_preview.quote_hit
                 local hit = self.text_preview.photo_hit

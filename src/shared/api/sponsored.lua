@@ -2,10 +2,20 @@ local M = {}
 local lifetime = 300
 
 function M.link_host(url)
-    if type(url) ~= "string" or url:find("[%s%z\\]") then return nil end
-    local authority = url:match("^https://([^/#?]+)")
+    if type(url) ~= "string" or #url > 4096 or url:find("[%c%s\\]") then return nil end
+    local authority = url:lower():match("^https?://([^/#?]+)")
     if not authority then return nil end
     return authority:match("^([%w][%w.-]*)$") or authority:match("^([%w][%w.-]*):443$")
+end
+
+function M.telegram_link(url)
+    if type(url) ~= "string" or #url > 4096 or url:find("[%c%s\\]") then return false end
+    if url:sub(1, 5):lower() == "tg://" then return true end
+    local host = M.link_host(url)
+    if not host then return false end
+    return host == "t.me" or host == "telegram.me" or host == "telegram.dog"
+        or host:match("%.t%.me$") ~= nil or host:match("%.telegram%.me$") ~= nil
+        or host:match("%.telegram%.dog$") ~= nil
 end
 
 function M.channel(chat)
@@ -51,7 +61,8 @@ function M.spaced_items(items, entry)
             count = count + (item.messages and #item.messages or 1)
             if count >= gap and entry.messages[ad_index] then
 
-                placements[index] = entry.messages[ad_index]
+                local before = items[index - 1]
+                placements[before and before.unread_divider and index - 1 or index] = entry.messages[ad_index]
                 count, ad_index = 0, ad_index + 1
             end
         end
@@ -167,10 +178,77 @@ function M.install(client)
         local url = ad and ad.sponsor and ad.sponsor.url
         if self.current_chat_id ~= chat_id or type(url) ~= "string" then return nil end
 
-        if not M.link_host(url) then return nil end
+        if not M.link_host(url) and not M.telegram_link(url) then return nil end
         self:send({["@type"] = "clickChatSponsoredMessage", chat_id = chat_id,
             message_id = message_id, is_media_click = false, from_fullscreen = false})
         return url
+    end
+
+    function client:request_sponsor_link(state, request, now)
+        self.sponsor_link_sequence = (self.sponsor_link_sequence or 0) + 1
+        state.token = "sponsor_link:" .. tostring(self.sponsor_link_sequence)
+        state.deadline = now + 12
+        state.invite = nil
+        self.sponsor_link = state
+        if not self:send(request, state.token) then state.error = "Could not open this Telegram link." end
+        return state
+    end
+
+    function client:open_sponsor_link(url, now, prefer_profile)
+        if not M.telegram_link(url) then return nil end
+        return self:request_sponsor_link({source_chat = self.current_chat_id, prefer_profile = prefer_profile},
+            {["@type"] = "getInternalLinkType", link = url}, now)
+    end
+
+    function client:join_sponsor_invite(state, now)
+        if self.sponsor_link ~= state or not state.invite or self.current_chat_id ~= state.source_chat then return end
+        self:request_sponsor_link(state, {["@type"] = "joinChatByInviteLink", invite_link = state.invite_link}, now)
+    end
+
+    function client:handle_sponsor_link(kind, extra, object, now)
+        if not extra:match("^sponsor_link:%d+$") then return false end
+        local state = self.sponsor_link
+        if not state or state.token ~= extra or self.current_chat_id ~= state.source_chat then return true end
+        state.token = nil
+        if now > state.deadline then
+            state.error = "Telegram did not respond. Try again."
+        elseif kind == "internalLinkTypePublicChat" or kind == "internalLinkTypeBotStart" then
+            self:request_sponsor_link(state, {["@type"] = "searchPublicChat",
+                username = object.chat_username or object.bot_username}, now)
+        elseif kind == "internalLinkTypeMessage" then
+            self:request_sponsor_link(state, {["@type"] = "getMessageLinkInfo", url = object.url}, now)
+        elseif kind == "internalLinkTypeChatInvite" then
+            state.invite_link = object.invite_link
+            self:request_sponsor_link(state, {["@type"] = "checkChatInviteLink", invite_link = object.invite_link}, now)
+        elseif kind == "chat" and object.id then
+            self:handle_new_chat(object)
+            local chat_type = object.type
+            if state.prefer_profile and chat_type and chat_type["@type"] == "chatTypePrivate" then
+                state.user_id = chat_type.user_id
+            else
+                state.chat_id = object.id
+            end
+        elseif kind == "messageLinkInfo" and object.chat_id and object.chat_id ~= 0 then
+            if object.message and object.message.id then
+                state.chat_id, state.message_id = object.chat_id, object.message.id
+            else
+                state.error = "This Telegram message is unavailable."
+            end
+        elseif kind == "chatInviteLinkInfo" then
+            if object.chat_id and object.chat_id ~= 0 then
+                state.chat_id = object.chat_id
+            elseif type(object.subscription_info) == "table" and object.subscription_info["@type"] then
+                state.error = "Open this paid invite in Telegram to review the subscription."
+            else
+                state.invite = object
+            end
+        elseif kind == "error" and object.message == "INVITE_REQUEST_SENT" then
+            state.error = "Join request sent."
+        else
+            state.error = kind == "error" and "This Telegram link could not be opened."
+                or "This Telegram link type is unavailable in SPgram."
+        end
+        return true
     end
 
     function client:report_channel_sponsor(chat_id, message_id, option, now)

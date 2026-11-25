@@ -53,28 +53,76 @@ return function(telegram)
         if chat_id then entry.chat_id = chat_id else entry.shared_frame = self.avatar_frame end
     end
 
+    local function queue_avatar(self, id, entry, path)
+        self.avatar_pending = self.avatar_pending or {}
+        if not self.avatar_pending[id] then
+            self.avatar_queue_order = (self.avatar_queue_order or 0) + 1
+            entry.queue_order = self.avatar_queue_order
+        end
+        self.avatar_pending[id] = entry
+        entry.pending_path, entry.status = path, "loading"
+    end
+
+    local function retry_avatar(entry, now)
+        entry.status, entry.download_deadline = "error", nil
+        local attempts = entry.download_attempts or 0
+        if entry.downloadable and attempts < 3 then entry.retry_at = now + 3 * (attempts + 1) end
+    end
+
+    local function request_avatar(self, id, entry, now)
+        entry.retry_at, entry.failed_path, entry.webp_failed = nil, nil, nil
+        entry.download_attempts = (entry.download_attempts or 0) + 1
+        entry.status, entry.download_deadline = "downloading", now + 20
+        self.avatar_download_generation = (self.avatar_download_generation or 0) + 1
+        entry.download_token = self:send({
+            ["@type"] = "downloadFile", file_id = id, priority = 1,
+            offset = 0, limit = 262145, synchronous = false,
+        }, "avatar:" .. tostring(id) .. ":" .. tostring(self.avatar_download_generation))
+        if not entry.download_token then retry_avatar(entry, now) end
+    end
+
+    function telegram:fail_avatar_download(token)
+        local id = tonumber(token:match("^avatar:(%d+):%d+$"))
+        if not id then return false end
+        local entry = self.avatar_photos[id]
+        if entry and entry.download_token == token and entry.status == "downloading" then
+            retry_avatar(entry, love.timer.getTime())
+        end
+        return true
+    end
+
     local function ensure_avatar(self, photo, chat_id)
         if not preferences.get("profile_pictures") then return end
         local size = photo and photo.small
         local id = size and size.id
         if not id then return end
         local storage = self.avatar_photos
+        local location = size["local"] or {}
         local entry = storage[id]
         if entry then
             mark_visible(self, entry, chat_id)
+            if entry.retry_at or entry.download_deadline then
+                local now = love.timer.getTime()
+                if entry.download_deadline and now >= entry.download_deadline then retry_avatar(entry, now) end
+                if entry.retry_at and now >= entry.retry_at then
+                    entry.retry_at = nil
+                    queue_avatar(self, id, entry)
+                end
+            elseif not entry.image and entry.status == "error" and location.is_downloading_completed
+                and location.path and location.path ~= "" and location.path ~= entry.failed_path then
+                self:load_avatar(id, location.path)
+            end
             return entry
         end
         if not make_room(self) then return end
-        entry = {status = "downloading"}
+        entry = {status = "downloading", downloadable = location.can_be_downloaded ~= false}
         mark_visible(self, entry, chat_id)
         storage[id] = entry
-        local location = size["local"] or {}
         if location.is_downloading_completed and location.path and location.path ~= "" then
             self:load_avatar(id, location.path)
-        elseif location.can_be_downloaded == false or not self:send({
-            ["@type"] = "downloadFile", file_id = id, priority = 1,
-            offset = 0, limit = 262145, synchronous = false,
-        }, "avatar:" .. tostring(id)) then
+        elseif entry.downloadable then
+            request_avatar(self, id, entry, love.timer.getTime())
+        else
             entry.status = "error"
         end
         return entry
@@ -109,27 +157,34 @@ return function(telegram)
         local entry = self.avatar_photos[file_id]
         if not entry or entry.image then return end
         if converted then
-            self:load_image(file_id, path, self.avatar_photos, 262144, 160)
-        elseif entry.failed_path ~= path and not entry.webp_job and not entry.webp_failed then
-            self.avatar_pending = self.avatar_pending or {}
-            self.avatar_pending[file_id] = entry
-            entry.pending_path, entry.status = path, "loading"
+            local reason = self:load_image(file_id, path, self.avatar_photos, 262144, 160)
+            if entry.image then entry.download_attempts = nil end
+            return reason
+        elseif entry.failed_path ~= path and not entry.webp_job then
+            entry.download_deadline, entry.retry_at, entry.webp_failed = nil, nil, nil
+            entry.avatar_path = path
+            queue_avatar(self, file_id, entry, path)
         end
     end
 
     function telegram:poll_avatar_images()
         local pending = self.avatar_pending
         if not pending or not next(pending) then return end
-        local newest_id, newest
+        local selected_id, selected
         for id, entry in pairs(pending) do
-            if not newest or entry.last_used > newest.last_used then newest_id, newest = id, entry end
+            if not selected or entry.queue_order < selected.queue_order then selected_id, selected = id, entry end
         end
-        pending[newest_id] = nil
-        local path = newest.pending_path
-        newest.pending_path = nil
-        if not self:queue_webp_image(newest_id, path, "avatar_photos") then
-            self:load_avatar(newest_id, path, true)
-            if not newest.image then newest.failed_path = path end
+        pending[selected_id] = nil
+        local path = selected.pending_path
+        selected.pending_path = nil
+        if not path then
+            request_avatar(self, selected_id, selected, love.timer.getTime())
+        elseif not self:queue_webp_image(selected_id, path, "avatar_photos") then
+            local reason = self:load_avatar(selected_id, path, true)
+            if not selected.image then
+                selected.failed_path = path
+                if reason == "missing" or reason == "texture" then retry_avatar(selected, love.timer.getTime()) end
+            end
         end
     end
 

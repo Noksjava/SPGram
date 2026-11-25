@@ -512,6 +512,7 @@ return function(telegram)
     function telegram:close_chat()
         local chat_id = self.current_chat_id
         self.current_chat_id = nil
+        self.sponsor_link = nil
         if chat_id then
             self:save_reading_positions()
             self:cancel_chat_avatars(chat_id)
@@ -921,7 +922,18 @@ return function(telegram)
             for _, message in ipairs(list) do
                 if message.id > state.unread_after and not message.is_outgoing then
                     state.initial_focus_id = message.id
+                    state.unread_divider_id = message.id
                     state.unread_after = nil
+                    break
+                end
+            end
+        end
+        local boundary = state.fallback_read_id
+        if state.fallback_unread and not state.unread_divider_id and #list > 0
+            and (not state.has_more or (boundary and list[1].id <= boundary)) then
+            for _, message in ipairs(list) do
+                if message.id > (boundary or 0) and not message.is_outgoing then
+                    state.unread_divider_id = message.id
                     break
                 end
             end
@@ -942,7 +954,6 @@ return function(telegram)
             log_to_file(self, "handle_new_message: rejected - missing message or chat_id")
             return
         end
-        log_to_file(self, "handle_new_message: chat_id=" .. tostring(message.chat_id) .. " current_chat_id=" .. tostring(self.current_chat_id) .. " msg_id=" .. tostring(message.id))
         if message.sender_id and message.sender_id["@type"] == "messageSenderUser" then
             self:ensure_user(message.sender_id.user_id)
         end
@@ -983,12 +994,16 @@ return function(telegram)
             end
             if not replaced then
                 list[#list + 1] = message
+                if history and not history.unread_divider_id and not history.fallback_unread
+                    and chat and not from_me and not message.is_outgoing
+                    and message.id > (tonumber(chat.last_read_inbox_message_id) or 0) then
+                    history.unread_divider_id = message.id
+                end
             end
             table.sort(list, function(a, b)
                 return (a.id or 0) < (b.id or 0)
             end)
             self.messages[message.chat_id] = list
-            log_to_file(self, "handle_new_message: added msg_id=" .. tostring(message.id) .. " to chat_id=" .. tostring(message.chat_id) .. " list_size=" .. tostring(#list))
             prune_messages(message.chat_id, self)
         end
 

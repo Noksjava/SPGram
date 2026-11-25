@@ -26,18 +26,22 @@ local function restore(except)
     return ok
 end
 
+local function configured_radio()
+    local pipe = io.popen("timeout 2 /usr/bin/batocera-settings-get wifi.enabled 2>/dev/null")
+    if not pipe then return end
+    local value = (pipe:read(16) or ""):match("^%s*([01])%s*$")
+    pipe:close()
+    return value
+end
+
 local function set_radio(action)
     restore()
     local status, _, code = os.execute("timeout 30 /usr/bin/batocera-wifi " .. action .. " >/dev/null 2>&1")
     if status ~= true and status ~= 0 then
         return false, (status == 124 or status == 124 * 256 or code == 124) and "Timed out" or "Command failed"
     end
-    local pipe = io.popen("timeout 2 /usr/bin/batocera-settings-get wifi.enabled 2>/dev/null")
-    if not pipe then return false, "State unverified" end
-    local configured = pipe:read(16)
-    pipe:close()
     local expected = action == "enable" and "1" or "0"
-    if not configured or not configured:match("^%s*" .. expected .. "%s*$") then return false, "State unverified" end
+    if configured_radio() ~= expected then return false, "State unverified" end
     return true, action == "enable" and "Enabled" or "Disabled"
 end
 
@@ -46,9 +50,18 @@ while true do
     if request.stop then restore(); break end
     local iface = request.iface
     local status
-    if request.radio == "enable" or request.radio == "disable" then
-        local ok, outcome = set_radio(request.radio)
-        replies:push({radio = request.radio, ok = ok, status = outcome})
+    if request.radio then
+        local radio = request.radio
+        if radio == "toggle" then
+            local configured = configured_radio()
+            radio = configured == "1" and "disable" or configured == "0" and "enable" or nil
+        end
+        if radio == "enable" or radio == "disable" then
+            local ok, outcome = set_radio(radio)
+            replies:push({radio = radio, ok = ok, status = outcome})
+        else
+            replies:push({radio = request.radio, ok = false, status = "State unavailable"})
+        end
     elseif iface and iface:match("^wl[%w_.-]*$") and #iface <= 15 then
         restore(iface)
         local mode = power_mode(iface)

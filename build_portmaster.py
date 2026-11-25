@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 import xml.etree.ElementTree as ET
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
-from portmaster.updater import UPDATE_KEY, read_update_key
+from portmaster.updater import DEFAULT_REPOSITORY, UPDATE_KEY, UPDATE_REPOSITORY, read_update_key
 
 
 ROOT = Path(__file__).resolve().parent
@@ -66,7 +66,9 @@ def package(version, repository, output, include_app_credentials=False, chat_pre
             release_candidate=False, video_runtime=None, update_public_key=None, stable_manifest=False):
     if not VERSION.fullmatch(version):
         raise ValueError("Use a stable X.Y.Z version without leading zeroes")
-    if repository and not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9-]*/[a-zA-Z0-9_.-]+", repository):
+    if update_public_key is not None and not repository:
+        repository = DEFAULT_REPOSITORY
+    if repository and not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9-]*/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*", repository):
         raise ValueError("Expected GitHub owner/repository")
     if stable_manifest and not (repository and update_public_key and release_candidate):
         raise ValueError("Stable metadata requires a repository, trusted update key and full release build")
@@ -89,6 +91,8 @@ def package(version, repository, output, include_app_credentials=False, chat_pre
     sources.update({
         launcher: f"portmaster/{launcher}",
         "gameinfo.xml": "portmaster/gameinfo.xml",
+        "cover.png": "portmaster/cover.png",
+        "screenshot.png": "portmaster/screenshot.png",
         "telegramsp/licenses/LICENSE.UPSTREAM.txt": "LICENSE",
         "telegramsp/licenses/LICENSE.TDLib.txt": "licenses/LICENSE.TDLib.txt",
         "telegramsp/updater.py": "portmaster/updater.py",
@@ -96,15 +100,12 @@ def package(version, repository, output, include_app_credentials=False, chat_pre
     name = f"SPgram-PortMaster-v{version}.zip"
     metadata = json.loads((ROOT / "portmaster/port.json").read_text(encoding="utf-8"))
     metadata["name"] = name
-    if release_candidate:
-        metadata["attr"]["desc"] = (
-            "SPgram is an unofficial client using the Telegram API. "
-            "Read chats and channels on your handheld."
-        )
-    elif chat_preview:
+    if chat_preview:
         metadata["attr"]["desc"] = "Unofficial client using the Telegram API. Development chat preview."
-    if bundled is not None:
-        metadata["attr"]["inst"] = "Launch SPgram and sign in by phone or QR code."
+    elif not release_candidate:
+        metadata["attr"]["desc"] = "Unofficial client using the Telegram API. Sign-in and session preview."
+    if bundled is None:
+        metadata["attr"]["inst"] = "Place your Telegram API credentials in telegramsp/conf/telegram.conf."
     entries = {
         "port.json": (json.dumps(metadata, indent=2) + "\n").encode(),
         APP + "VERSION": (version + "\n").encode(),
@@ -112,6 +113,7 @@ def package(version, repository, output, include_app_credentials=False, chat_pre
     }
     if update_public_key is not None:
         entries["telegramsp/" + UPDATE_KEY] = read_update_key(update_public_key)
+        entries["telegramsp/" + UPDATE_REPOSITORY] = (repository + "\n").encode("ascii")
     for dest, source in sources.items():
         path = ROOT / source
         if not path.is_file() or path.resolve() != path or (source not in tracked and source not in ROOT_FILES and source not in portable_assets):
@@ -144,9 +146,8 @@ def package(version, repository, output, include_app_credentials=False, chat_pre
     ))
     entries["README.md"] = "\n".join(readme).encode("utf-8")
     gameinfo = ET.fromstring(entries["gameinfo.xml"])
-    if release_candidate or chat_preview:
-        gameinfo.find("game/desc").text = metadata["attr"]["desc"]
-        entries["gameinfo.xml"] = ET.tostring(gameinfo, encoding="utf-8", xml_declaration=True)
+    gameinfo.find("game/desc").text = metadata["attr"]["desc"]
+    entries["gameinfo.xml"] = ET.tostring(gameinfo, encoding="utf-8", xml_declaration=True)
     elf = entries[APP + "lib/libtdjson.so"]
     if elf[:6] != b"\x7fELF\x02\x01" or int.from_bytes(elf[18:20], "little") != 183:
         raise ValueError("Expected an AArch64 ELF64 TDLib object")

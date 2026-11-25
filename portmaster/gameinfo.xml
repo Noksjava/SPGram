@@ -3,9 +3,10 @@
   <game>
     <path>./SPgram.sh</path>
     <name>SPgram</name>
-    <desc>Unofficial client using the Telegram API. This preview tests sign-in and session restart.</desc>
+    <desc>SPgram is an unofficial client using the Telegram API, designed for handheld controls. Browse chats, channels, and comments, send messages and stickers, and play supported media.</desc>
     <developer>Noksjava</developer>
     <publisher>Noksjava</publisher>
-    <genre>Utility</genre>
+    <genre>Other</genre>
+    <image>./telegramsp/cover.png</image>
   </game>
 </gameList>

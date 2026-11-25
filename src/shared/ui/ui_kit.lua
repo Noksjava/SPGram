@@ -317,6 +317,53 @@ function ui.contrasting_text(background)
     return luminance >= 0.179 and {0, 0, 0} or ui.colors.white
 end
 
+function ui.pixel_icon(icon, x, y, color)
+    for row, pixels in ipairs(icon) do
+        for column = 1, #pixels do
+            if pixels:sub(column, column) == "1" then
+                ui.rect(x + (column - 1) * 3, y + (row - 1) * 3, 3, 3, color)
+            end
+        end
+    end
+end
+
+function ui.settings_row_height(font)
+    return math.max(34, font:getHeight() + 14)
+end
+
+function ui.settings_row(font, y, height, row)
+    local w, colors = ui.width(), ui.colors
+    local bg = row.selected and (row.danger and colors.red or colors.accent) or colors.panel_alt
+    local ink = row.selected and ui.contrasting_text(bg) or colors.text
+    local icon_y = y + math.floor((height - 21) / 2)
+    local text_y = y + math.floor((height - font:getHeight()) / 2)
+    local right = w - 58
+    local value_font = row.value_font or font
+    local value = row.value and ui.fit(row.value, value_font, math.max(1, math.floor((w - 142) * 0.38)))
+    if value then
+        right = right - value_font:getWidth(value)
+    elseif row.binding then
+        right = right - font:getHeight()
+    elseif row.arrow then
+        right = right - 14
+    end
+    ui.retro_panel(40, y, w - 80, height, bg, row.selected and colors.accent_dark or colors.header)
+    if row.selected then
+        ui.focus_corners(41, y + 1, w - 82, height - 2, colors.accent, row.lift)
+    end
+    ui.pixel_icon(row.icon, 56, icon_y, row.selected and ink or colors.accent)
+    ui.text(ui.fit(row.label, font, math.max(1, right - 102)), 90, text_y, font, ink)
+    if value then
+        ui.text(value, right, y + math.floor((height - value_font:getHeight()) / 2), value_font, ink)
+    elseif row.binding then
+        ui.button_hint(row.binding, right, text_y, font, ink, nil, ink)
+    elseif row.arrow then
+        for step = 0, 4 do
+            ui.rect(w - 64 + math.min(step, 4 - step) * 2, icon_y + 5 + step * 2, 2, 2, ink)
+        end
+    end
+end
+
 function ui.button_hint(text, x, y, font, color, center_width, active_color)
     local parts, width = {}, 0
     local icon_size = font:getHeight()

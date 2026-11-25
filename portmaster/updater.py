@@ -23,6 +23,8 @@ LIMIT = 100 * 1024 * 1024
 EXPANDED_LIMIT = 160 * 1024 * 1024
 MANIFEST_LIMIT = 65536
 UPDATE_KEY = "update-public-key.der"
+UPDATE_REPOSITORY = "update-repository"
+DEFAULT_REPOSITORY = "Noksjava/SPGram"
 SIGNATURE_NAME = "release-manifest.sig"
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 VERSION = re.compile(r"(?:0|[1-9][0-9]{0,7})(?:\.(?:0|[1-9][0-9]{0,7})){2}")
@@ -181,11 +183,14 @@ class Releases:
     def __init__(self, store, installed):
         if not store.update_authentication_available():
             raise ValueError("Signed updates are unavailable on this installation")
-        configuration = read_json(store.port / "conf" / "updates.json", 4096)
-        repository = configuration["repository"]
+        repository_path = store.port / UPDATE_REPOSITORY
+        if repository_path.is_symlink():
+            raise ValueError("Invalid release repository")
+        repository = (read_bytes(repository_path, 256).decode("ascii").strip()
+                      if repository_path.is_file() else DEFAULT_REPOSITORY)
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_-][A-Za-z0-9_.-]*", repository):
             raise ValueError("Invalid release repository")
-        if platform.machine() != "aarch64" or configuration["firmware"] != "Gladiator II":
+        if platform.machine() != TARGET["arch"]:
             raise ValueError("Unsupported update target")
         self.repository = repository
         self.installed = installed
@@ -203,13 +208,20 @@ class Releases:
 
     def check(self):
         latest = bytearray()
-        fetch(f"https://api.github.com/repos/{self.repository}/releases/latest",
-              "api.github.com", 2 * 1024 * 1024, lambda data, _: latest.extend(data))
+        try:
+            fetch(f"https://api.github.com/repos/{self.repository}/releases/latest",
+                  "api.github.com", 2 * 1024 * 1024, lambda data, _: latest.extend(data))
+        except HTTPError as error:
+            if error.code != 404:
+                raise
+            return {"available": False, "no_release": True}
         release = json.loads(latest)
-        label = release["tag_name"][1:]
-        if (release["tag_name"] != "v" + label or release["draft"] is not False
-                or release["prerelease"] is not False):
+        if release["draft"] is not False or release["prerelease"] is not False:
             raise ValueError("Unexpected release")
+        tag = release["tag_name"]
+        if not tag.startswith("v") or not VERSION.fullmatch(tag[1:]):
+            return {"available": False, "no_release": True}
+        label = tag[1:]
         assets = release["assets"]
 
         def find_asset(name):
@@ -219,7 +231,10 @@ class Releases:
             return matches[0]
 
         if version(label) <= version(self.installed):
-            return {"latest": label, "available": False}
+            return {"latest": label, "available": False, "installed_ahead": version(label) < version(self.installed)}
+        if not any(asset["name"] in {"release-manifest.json", SIGNATURE_NAME} for asset in assets):
+            find_asset(f"SPgram-PortMaster-v{label}.zip")
+            return {"latest": label, "manual_update": True}
         find_asset("release-manifest.json")
         find_asset(SIGNATURE_NAME)
         payload = bytearray()

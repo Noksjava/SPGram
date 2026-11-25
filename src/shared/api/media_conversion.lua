@@ -49,11 +49,15 @@ return function(telegram)
         local input = io.open(path, "rb")
         if not input then
             entry.status = "error"
-            return
+            return "missing"
         end
         local data = input:read(max_bytes and max_bytes + 1 or "*a")
         input:close()
-        if not data or data == "" or (max_bytes and #data > max_bytes) then
+        if not data or data == "" then
+            entry.status = "error"
+            return "missing"
+        end
+        if max_bytes and #data > max_bytes then
             entry.status = "error"
             return
         end
@@ -77,7 +81,7 @@ return function(telegram)
         if type(image_data) == "userdata" then image_data:release() end
         if not ok3 or not image then
             entry.status = "error"
-            return
+            return "texture"
         end
         entry.image = image
         entry.width = image:getWidth()
@@ -155,7 +159,10 @@ return function(telegram)
             end
             entry.webp_job = nil
             entry.webp_failed = not entry.image
-            if entry.webp_failed then entry.status = "error" end
+            if entry.webp_failed then
+                entry.status = "error"
+                if storage == self.avatar_photos then entry.failed_path = entry.avatar_path end
+            end
         end
         os.remove(result.output)
     end

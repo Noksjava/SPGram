@@ -31,15 +31,16 @@ local function utf16_units(text)
     return count
 end
 
-local function entity_ranges(text, entities, custom)
+local function entity_ranges(text, entities, custom, reader)
     local bounds, ranges = {}, {}
     for _, entity in ipairs(entities or {}) do
         local kind = entity.type and entity.type["@type"]
         local id = kind == "textEntityTypeCustomEmoji" and entity.type.custom_emoji_id
-        if (custom and id) or (not custom and (kind == "textEntityTypeUrl" or kind == "textEntityTypeTextUrl")) then
+        if (custom and id) or (not custom and (kind == "textEntityTypeUrl" or kind == "textEntityTypeTextUrl"
+            or (reader and (kind == "textEntityTypeMention" or kind == "textEntityTypeMentionName")))) then
             local offset, length = tonumber(entity.offset), tonumber(entity.length)
             if offset and length and offset >= 0 and length > 0 then
-                ranges[#ranges + 1] = {offset, offset + length, id}
+                ranges[#ranges + 1] = {offset, offset + length, reader and entity.type or id}
             end
         end
     end
@@ -65,6 +66,39 @@ local function link_ranges(text, entities)
     return entity_ranges(text, entities, false)
 end
 
+local function reader_links(text, entities)
+    local links = entity_ranges(text, entities, false, true) or {}
+    for _, link in ipairs(links) do
+        local entity, label = link[3], text:sub(link[1], link[2])
+        if entity["@type"] == "textEntityTypeMentionName" then
+            link.user_id = tonumber(entity.user_id)
+        elseif entity["@type"] == "textEntityTypeMention" then
+            if label:match("^@[%w_]+$") then link.url = "tg://resolve?domain=" .. label:sub(2) end
+        else
+            link.url = entity.url or label
+        end
+    end
+    local function append(first, last, url)
+        for _, link in ipairs(links) do
+            if first <= link[2] and last >= link[1] then return end
+        end
+        links[#links + 1] = {first, last, url = url}
+    end
+    for first, label, after in text:gmatch("()%f[%w](t%.me/[^%s<>]+)()") do
+        if not text:sub(first - 1, first - 1):match("[%w_./@+-]") then
+            local clean = label:gsub("[.,;!?)%]]+$", "")
+            append(first, after - 1 - (#label - #clean), clean)
+        end
+    end
+    for first, handle, after in text:gmatch("()@([%w_]+)()") do
+        if #handle <= 32 and not text:sub(first - 1, first - 1):match("[%w_./+-]") then
+            append(first, after - 1, "tg://resolve?domain=" .. handle)
+        end
+    end
+    table.sort(links, function(a, b) return a[1] < b[1] end)
+    return links
+end
+
 local function custom_emoji_ranges(text, entities, sticker)
     if sticker and text ~= "" then return {{1, #text, sticker}} end
     local ranges = entity_ranges(text, entities, true)
@@ -84,7 +118,7 @@ local function line_starts(text, lines)
     return starts
 end
 
-local function draw_link_line(text, start, links, x, y, font, color, emojis, resolve)
+local function draw_link_line(text, start, links, x, y, font, color, emojis, resolve, selected)
     local cursor = 1
     local function draw_span(first, last)
         if first > last then return end
@@ -96,7 +130,8 @@ local function draw_link_line(text, start, links, x, y, font, color, emojis, res
             if link_first <= link_last then
                 local offset = x + font:getWidth(text:sub(1, link_first - 1))
                 local label = text:sub(link_first, link_last)
-                ui.text(label, offset, y, font, ui.colors.accent)
+                if link == selected then ui.rect(offset - 1, y, font:getWidth(label) + 2, font:getHeight(), ui.colors.accent, 2) end
+                ui.text(label, offset, y, font, link == selected and ui.contrasting_text(ui.colors.accent) or ui.colors.accent)
                 local bottom = y + font:getHeight() - 1
                 love.graphics.setColor(ui.colors.accent)
                 love.graphics.line(offset, bottom, offset + font:getWidth(label), bottom)
@@ -200,7 +235,7 @@ local MONTHS_GENITIVE = {
 
 local date_label
 
-local function conversation_items(messages)
+local function conversation_items(messages, unread_id)
     local items = {}
     local last_day
     for _, message in ipairs(messages) do
@@ -251,7 +286,7 @@ local function conversation_items(messages)
             action_text = "Auto-delete timer changed"
         end
         if action_text then
-            items[#items + 1] = {action_label = action_text}
+            items[#items + 1] = {action_label = action_text, message_id = message.id}
         else
             local album_id = (ctype == "messagePhoto" or ctype == "messageVideo") and media_album_id(message)
             local previous = items[#items]
@@ -269,6 +304,16 @@ local function conversation_items(messages)
         if item.messages and #item.messages == 1 then
             item.message = item.messages[1]
             item.messages = nil
+        end
+    end
+    if unread_id and messages[1] and messages[1].id <= unread_id then
+        for index, item in ipairs(items) do
+            local last = item.messages and item.messages[#item.messages] or item.message
+            local id = last and last.id or item.message_id
+            if id and id >= unread_id then
+                table.insert(items, index, {unread_divider = true})
+                break
+            end
         end
     end
     return items
@@ -479,6 +524,7 @@ return {
     wrapped_lines = wrapped_lines,
     utf16_units = utf16_units,
     link_ranges = link_ranges,
+    reader_links = reader_links,
     custom_emoji_ranges = custom_emoji_ranges,
     line_starts = line_starts,
     draw_link_line = draw_link_line,

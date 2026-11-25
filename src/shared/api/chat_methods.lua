@@ -278,6 +278,11 @@ return function(telegram)
     end
 
     function telegram:rebuild_chats()
+        if self.defer_chat_lists then
+            self.pending_main_list = true
+            return
+        end
+        self.pending_main_list = nil
         local list = {}
         for _, chat in pairs(self.chats_by_id) do
             if same_list(chat.chat_list, MAIN_LIST) then
@@ -289,6 +294,11 @@ return function(telegram)
     end
 
     function telegram:rebuild_archive_chats()
+        if self.defer_chat_lists then
+            self.pending_archive_list = true
+            return
+        end
+        self.pending_archive_list = nil
         local list = {}
         for _, chat in pairs(self.archive_chats_by_id) do
             if same_list(chat.chat_list, ARCHIVE_LIST) then
@@ -300,6 +310,11 @@ return function(telegram)
     end
 
     function telegram:rebuild_filter_chats()
+        if self.defer_chat_lists then
+            self.pending_filter_lists = true
+            return
+        end
+        self.pending_filter_lists = nil
         local lists = {}
         local function is_discussion(chat)
             local t = chat and chat.type

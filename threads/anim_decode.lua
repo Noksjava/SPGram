@@ -6,6 +6,8 @@ local thumbnail = (...) == "thumbnail"
 local prefix = thumbnail and "thumbnail" or "anim"
 local in_channel = love.thread.getChannel(prefix .. "_in")
 local out_channel = love.thread.getChannel(prefix .. "_out")
+local priority_in = not thumbnail and love.thread.getChannel("anim_priority_in")
+local priority_out = not thumbnail and love.thread.getChannel("anim_priority_out")
 
 local MAX_FRAMES = 24
 local MAX_EDGE = 128
@@ -100,18 +102,20 @@ local function probe(path)
     return tonumber(stream.width), tonumber(stream.height), tonumber(stream.duration) or tonumber(format.duration)
 end
 
-local function plan(width, height, duration, is_webm)
+local function plan(width, height, duration, is_webm, animation)
     if not duration or duration <= 0 then duration = 3 end
-    local fps = math.min(is_webm and MAX_FPS / 2 or MAX_FPS, MAX_FRAMES / duration)
-    local count = math.max(1, math.min(MAX_FRAMES, math.floor(duration * fps + 0.5)))
+    local limit = animation and 144 or MAX_FRAMES
+    local fps = math.min(animation and 15 or (is_webm and MAX_FPS / 2 or MAX_FPS), limit / duration)
+    local count = math.max(1, math.min(limit, math.floor(duration * fps + 0.5)))
     local frame_dt = 1 / fps
+    local max_edge = animation and math.min(MAX_EDGE, math.floor(math.sqrt(1572864 / (4 * count)))) or MAX_EDGE
     local target_w, target_h = width, height
     if not target_w or not target_h or target_w < 2 or target_h < 2 then
-        return count, frame_dt, MAX_EDGE, nil
+        return count, frame_dt, max_edge, nil
     end
     local edge = math.max(target_w, target_h)
-    if edge > MAX_EDGE then
-        local scale = MAX_EDGE / edge
+    if edge > max_edge then
+        local scale = max_edge / edge
         target_w = math.max(2, math.floor(target_w * scale + 0.5))
         target_h = math.max(2, math.floor(target_h * scale + 0.5))
     end
@@ -246,18 +250,19 @@ local function decode_job(job)
     local is_webm = (job.path or ""):match("%.webm$")
         or (job.sticker_format == "stickerFormatWebm")
         or (input_path or ""):match("%.webm$")
-    local count, frame_dt, target_w, target_h = plan(width, height, duration or job.duration, is_webm)
+    local count, frame_dt, target_w, target_h = plan(width, height, duration or job.duration, is_webm,
+        job.kind == "animation" and not job.first_frame)
     if job.first_frame then count = 1 end
     local filter
     if target_h then
         filter = string.format("fps=%.4f,scale=%d:%d:flags=lanczos", 1 / frame_dt, target_w, target_h)
     else
         filter = string.format("fps=%.4f,scale=%d:%d:force_original_aspect_ratio=decrease:flags=lanczos",
-            1 / frame_dt, MAX_EDGE, MAX_EDGE)
+            1 / frame_dt, target_w, target_w)
     end
     local command = string.format(
         "%s%s -nostdin -y -v error -an -max_alloc 67108864 -threads 1 -filter_threads 1%s -i %s -vf %s " ..
-        "-start_number 1 -frames:v %d -c:v png -threads:v 1 -pix_fmt rgba %s >/dev/null 2>&1",
+        "-start_number 1 -frames:v %d -c:v png -compression_level 1 -threads:v 1 -pix_fmt rgba %s >/dev/null 2>&1",
         clean_env,
         sh_quote(ffmpeg),
         local_input,
@@ -307,7 +312,8 @@ local function run_cancelable(command, output)
     local cancel = sh_quote(output .. ".cancel")
     return run("{ [ ! -f " .. cancel .. " ] || exit 1; " .. command .. " >/dev/null 2>&1 & encoder=$!; "
         .. 'while kill -0 "$encoder" 2>/dev/null; do '
-        .. 'if [ -f ' .. cancel .. ' ]; then kill -KILL "$encoder" 2>/dev/null; break; fi; sleep 1; done; '
+        .. 'if [ -f ' .. cancel .. ' ]; then kill -TERM "$encoder" 2>/dev/null; sleep 0.2 || sleep 1; '
+        .. 'kill -KILL "$encoder" 2>/dev/null; break; fi; sleep 0.2 || sleep 1; done; '
         .. 'wait "$encoder"; } 2>/dev/null')
 end
 
@@ -343,7 +349,7 @@ local function convert_video(job)
         .. " -max_alloc 134217728 -threads 1" .. local_input .. " -i " .. sh_quote(job.path)
         .. " -map 0:V:0 -map '0:a:0?' -map_metadata -1 -map_chapters -1 -filter_threads 1 -threads 1"
         .. " -vf " .. sh_quote(filter)
-        .. " -c:v libtheora -b:v 240k -pix_fmt yuv420p -c:a libvorbis -b:a 40k -ac 1 -ar 24000 "
+        .. " -c:v libtheora -b:v 240k -g 15 -pix_fmt yuv420p -c:a libvorbis -b:a 40k -ac 1 -ar 24000 "
         .. sh_quote(job.output)
     result.ok = run_cancelable(command, job.output) and (file_size(job.output) or 0) > 0
     if not result.ok then
@@ -364,8 +370,15 @@ local function convert_webp(job)
     return run(command) and (file_size(job.output) or 0) > 0
 end
 
+local deferred
 while true do
-    local job = in_channel:demand()
+    local job = priority_in and priority_in:pop()
+    if not job then
+        job = deferred or in_channel:demand()
+        deferred = nil
+        local queued = priority_in and priority_in:pop()
+        if queued then job, deferred = queued, job end
+    end
     if type(job) ~= "table" or job.type == "quit" then
         break
     end
@@ -375,12 +388,12 @@ while true do
             output = job.output, ok = ok and converted == true})
     elseif not thumbnail and job.type == "convert_video" then
         local ok, result = pcall(convert_video, job)
-        out_channel:push(ok and result or {
+        priority_out:push(ok and result or {
             type = "converted_video", name = job.name, ok = false, error = "Could not prepare this video.",
         })
     elseif not thumbnail and job.type == "convert_audio" then
         local ok, result = pcall(convert_audio, job)
-        out_channel:push(ok and result or {
+        priority_out:push(ok and result or {
             type = "converted_audio", name = job.name, ok = false, error = "Could not prepare this audio.",
         })
     elseif not thumbnail and job.type == "decode" and job.path and job.out_dir and job.file_id then

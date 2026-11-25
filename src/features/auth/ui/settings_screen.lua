@@ -3,10 +3,8 @@ local keyboard_languages = require("src.shared.system.keyboard_languages")
 local controller_map = require("src.shared.system.controller_map")
 local performance = require("src.shared.system.performance")
 local media_settings = require("src.shared.system.media_settings")
-local release_screen = require("src.features.auth.ui.release_screen")
 
 local settings_screen = {}
-local ITEM_HEIGHT = 34
 local START_Y = 70
 local FOOTER_HEIGHT = 60
 local FACE_ORDER = {4, 3, 1, 2}
@@ -16,6 +14,10 @@ local PERFORMANCE_SECTION = {
     items = {"memory_preset", "inline_animation", "profile_pictures", "autoplay_images", "video_thumbnails",
         "small_texture_cache", "frame_rate", "vsync"},
     icon = {"0001100", "0011000", "0110000", "1111110", "0011000", "0110000", "1100000"},
+}
+local PROFILE_SECTION = {
+    label = "My profile",
+    icon = {"0011100", "0011100", "0011100", "0000000", "0011100", "0111110", "1111111"},
 }
 
 local MEMORY_ROWS = {
@@ -33,34 +35,66 @@ local SECTIONS = {
         icon = {"0001000", "0011010", "1111001", "1111001", "1111001", "0011010", "0001000"}},
     {id = "language", label = "Language settings", items = {"keyboard_languages"},
         icon = {"0011100", "0101010", "1001001", "1111111", "1001001", "0101010", "0011100"}},
-    {id = "advanced", label = "Advanced", items = {"reconnect", "wifi_off", "wifi_on", "wifi_keep_awake",
-        "show_mouse", "refresh_messages", "update_github", "minimize"},
+    {id = "advanced", label = "Advanced", items = {"reconnect", "wifi_radio", "wifi_keep_awake",
+        "show_mouse", "refresh_messages", "minimize"},
         icon = {"0100010", "1110000", "0100111", "0100010", "1110010", "0100111", "0100010"}},
     {id = "controls", label = "Controls", items = {"map_keys", "calibrate_faces", "abxy", "vibration_test"},
         icon = {"0000000", "0111110", "1010001", "1111011", "1010001", "1000001", "0111110"}},
 }
 
-local WIFI_ACTIONS = {wifi_off = "disable", wifi_on = "enable"}
-
-local function draw_section_icon(icon, x, y, color)
-    for row, pixels in ipairs(icon) do
-        for column = 1, #pixels do
-            if pixels:sub(column, column) == "1" then
-                ui.rect(x + (column - 1) * 3, y + (row - 1) * 3, 3, 3, color)
-            end
-        end
-    end
-end
+local ROW_ICONS = {
+    exit_app = {"1111000", "1000000", "1000100", "1001111", "1000100", "1000000", "1111000"},
+    logout = {"1111100", "1000100", "1010100", "1011111", "1010100", "1000100", "1111100"},
+    add_account = {"0110000", "0110000", "0000010", "1110111", "1110010", "1110000", "0000000"},
+    update_github = {"0001000", "0011000", "0111110", "0011001", "0000001", "1000001", "0111110"},
+    theme = {"0011100", "0100010", "1010101", "1000001", "1010110", "0100100", "0011000"},
+    fonts = {"0011100", "0100010", "1000001", "1111111", "1000001", "1000001", "1000001"},
+    ui_motion = {"0010000", "0011000", "0011100", "0011110", "0011100", "0011000", "0010000"},
+    startup_intro = {"1111111", "1000001", "1010001", "1011001", "1010001", "1000001", "1111111"},
+    wallpaper = {"1111111", "1000001", "1000101", "1010001", "1101011", "1000101", "1111111"},
+    scale = {"1110111", "1000001", "1010101", "0001000", "1010101", "1000001", "1110111"},
+    memory_preset = {"0010100", "0111110", "1101011", "0100010", "1101011", "0111110", "0010100"},
+    inline_animation = {"1111111", "1000001", "1011001", "1011101", "1011001", "1000001", "1111111"},
+    small_texture_cache = {"0111110", "1100011", "1011101", "1000001", "1011101", "1000001", "1111111"},
+    frame_rate = {"0111110", "1000001", "1001001", "1011001", "1000001", "1000001", "0111110"},
+    vsync = {"1100110", "0010010", "0001010", "1010010", "1001000", "1000100", "0110011"},
+    keyboard_languages = {"0000000", "1111111", "1000001", "1111111", "1010101", "1111111", "0000000"},
+    wifi_radio = {"0111110", "1000001", "0011100", "0100010", "0001000", "0000000", "0001000"},
+    wifi_keep_awake = {"0111110", "1000001", "0011100", "0100010", "0001000", "0011100", "0001000"},
+    show_mouse = {"1000000", "1100000", "1010000", "1001000", "1000100", "1111100", "0010000"},
+    minimize = {"1111111", "1000001", "1000001", "1000001", "1000001", "1011101", "1111111"},
+    calibrate_faces = {"0001000", "0011100", "0101010", "1110111", "0101010", "0011100", "0001000"},
+    abxy = {"0000000", "0111110", "0001010", "0100000", "0101000", "0111110", "0000000"},
+    vibration_test = {"0011100", "1010101", "1010101", "0010100", "1010101", "1010101", "0011100"},
+    confirm = {"0000000", "0000001", "0000010", "1000100", "0101000", "0010000", "0000000"},
+    back = {"0010000", "0100000", "1111111", "0100001", "0010001", "0000001", "0000000"},
+    media_shortcuts = {"0001100", "0011000", "0110000", "1111110", "0011000", "0110000", "1100000"},
+}
+ROW_ICONS.profile = PROFILE_SECTION.icon
+ROW_ICONS.profile_pictures = PROFILE_SECTION.icon
+ROW_ICONS.account = PROFILE_SECTION.icon
+ROW_ICONS.font_family = ROW_ICONS.fonts
+ROW_ICONS.autoplay_images = ROW_ICONS.wallpaper
+ROW_ICONS.video_thumbnails = ROW_ICONS.startup_intro
+ROW_ICONS.message_sound = SECTIONS[2].icon
+ROW_ICONS.keyboard_language = SECTIONS[3].icon
+ROW_ICONS.reconnect = ROW_ICONS.update_github
+ROW_ICONS.refresh_messages = ROW_ICONS.update_github
+ROW_ICONS.map_keys = SECTIONS[5].icon
+ROW_ICONS.shortcuts = SECTIONS[5].icon
+ROW_ICONS.options = SECTIONS[4].icon
+ROW_ICONS.search = ROW_ICONS.media_shortcuts
+ROW_ICONS.keyboard = ROW_ICONS.keyboard_languages
 
 function settings_screen:row_layout(height)
-    local item_height = math.max(ITEM_HEIGHT, self.fonts.normal:getHeight() + 14)
-    local inline_hints = self.section and self.section ~= PERFORMANCE_SECTION and not self.fonts_open and not self.languages_open
-    local row_height = item_height + (inline_hints and self.fonts.tiny:getHeight() + 4 or 6)
+    local item_height = ui.settings_row_height(self.fonts.normal)
+    local row_height = item_height + 6
     local visible = math.max(1, math.floor((height - START_Y - FOOTER_HEIGHT) / row_height))
     return visible, item_height, row_height
 end
 
 function settings_screen.new(fonts, tg, callbacks)
+    local version = love.filesystem and love.filesystem.read and love.filesystem.read("VERSION")
     local self = {
         fonts = fonts,
         tg = tg,
@@ -69,7 +103,8 @@ function settings_screen.new(fonts, tg, callbacks)
         selected_item = 2,
         scroll_offset = 0,
         logout_confirm = false,
-        releases = release_screen.new(fonts),
+        releases = callbacks and callbacks.releases,
+        version = version and version:match("^%s*(%d+%.%d+%.%d+)%s*$"),
     }
     return setmetatable(self, {__index = settings_screen})
 end
@@ -103,28 +138,30 @@ function settings_screen:items()
         end
         return items
     end
-    if self.section then
+    if self.section == PROFILE_SECTION then
+        local items = {{id = "profile"}}
+        for _, account in ipairs(self:accounts()) do
+            items[#items + 1] = {id = "account:" .. account.key, account = account}
+        end
+        items[#items + 1] = {id = "add_account"}
+        items[#items + 1] = {id = "logout"}
+        return items
+    elseif self.section then
         local items = {}
         for _, id in ipairs(self.section.items) do
             if (id ~= "wifi_keep_awake" or self.tg:wifi_power_supported())
-                and (not WIFI_ACTIONS[id] or self.tg:wifi_radio_supported())
-                and (id ~= "calibrate_faces" or self.callbacks.calibrate_faces)
-                and (id ~= "update_github" or self.releases) then
+                and (id ~= "wifi_radio" or self.tg:wifi_radio_supported())
+                and (id ~= "calibrate_faces" or self.callbacks.calibrate_faces) then
                 items[#items + 1] = {id = id, section = id == "performance" and PERFORMANCE_SECTION or nil}
             end
         end
         return items
     end
-    local accounts = self:accounts()
-    local items = {{id = "exit_app"}, {id = "profile"}}
+    local items = {{id = "exit_app"}, {id = "my_profile", section = PROFILE_SECTION}}
+    if self.releases then items[#items + 1] = {id = "update_github"} end
     for _, section in ipairs(SECTIONS) do
         items[#items + 1] = {id = section.id, section = section}
     end
-    for _, account in ipairs(accounts) do
-        items[#items + 1] = {id = "account:" .. account.key, account = account}
-    end
-    items[#items + 1] = {id = "add_account"}
-    items[#items + 1] = {id = "logout"}
     return items
 end
 
@@ -137,6 +174,61 @@ function settings_screen:enter()
     self.animated_item = nil
     self.quit_confirm, self.logout_confirm = false, false
     media_settings.load()
+end
+
+local ROW_LABELS = {
+    exit_app = "Quit SPgram", logout = "Sign out", add_account = "Add account", profile = "View profile",
+    update_github = "Updates", scale = "Interface scale", calibrate_faces = "Calibrate face buttons",
+    map_keys = "Map keys", fonts = "Interface font", ui_motion = "Interface motion",
+    keyboard_languages = "Keyboard languages", message_sound = "Message sound", startup_intro = "Startup intro",
+    vibration_test = "Vibration test", minimize = "Minimize", wifi_radio = "Wi-Fi radio",
+    wifi_keep_awake = "Keep Wi-Fi awake", reconnect = "Reconnect to Telegram", theme = "Theme",
+    wallpaper = "Chat wallpaper", abxy = "Swap Confirm / Back", show_mouse = "Mouse pointer",
+    refresh_messages = "Refresh messages", memory_preset = "Memory preset", frame_rate = "Frame-rate cap", vsync = "VSync",
+}
+
+local function enabled_label(value)
+    return value and "On" or "Off"
+end
+
+local function row_content(self, item, active_key)
+    local id = item.id
+    if item.section then return item.section.label, nil, true end
+    if item.account then
+        local account = item.account
+        if account.key == active_key then
+            local me = self.tg.me
+            return me and self.tg:user_name(me.id) or account.title or "Account", "Active"
+        end
+        return account.title or "Account", account.authorized and "Saved" or "Signed out"
+    end
+    local setting = MEMORY_ROWS[id]
+    if setting then return setting[1], setting[media_settings.get(id) and 2 or 3] end
+    local label = ROW_LABELS[id]
+    if id == "scale" then return label, string.format("%.1f×", self.scale) end
+    if id == "memory_preset" then return label, media_settings.memory_preset() end
+    if id == "frame_rate" then return label, tostring(performance.get_fps()) .. " FPS" end
+    if id == "vsync" then return label, enabled_label(performance.get_vsync()) end
+    if id == "fonts" then return label, ui.get_font_family().label end
+    if id == "font_family" then
+        return item.option.label, ui.get_font_family() == item.option and "Active" or "Aa 09",
+            false, ui.font_preview(item.option)
+    end
+    if id == "keyboard_language" then return item.label, enabled_label(keyboard_languages.enabled(item.code)) end
+    if id == "ui_motion" or id == "message_sound" or id == "startup_intro" then
+        return label, enabled_label(media_settings.get(id))
+    end
+    if id == "wifi_radio" then return label, self.tg:wifi_radio_label() or "Toggle" end
+    if id == "wifi_keep_awake" then return label, self.tg:wifi_power_label() end
+    if id == "reconnect" then return label, self.tg:connection_label() end
+    if id == "theme" then return label, self.callbacks.get_theme and self.callbacks.get_theme() or "dark" end
+    if id == "wallpaper" then return label, self.callbacks.get_wallpaper and self.callbacks.get_wallpaper() or "off" end
+    if id == "abxy" then return label, enabled_label(self:abxy_layout() == "retro") end
+    if id == "show_mouse" then return label, enabled_label(media_settings.get("show_mouse_cursor")) end
+    if id == "logout" and self.logout_confirm then return "Confirm sign-out" end
+    if id == "exit_app" and self.quit_confirm then return "Confirm quit" end
+    return label, nil, id == "profile" or id == "update_github" or id == "keyboard_languages"
+        or id == "map_keys" or id == "calibrate_faces"
 end
 
 function settings_screen:draw()
@@ -152,7 +244,7 @@ function settings_screen:draw()
     ui.rect(0, 0, w, 56, colors.header)
     local title = self.fonts_open and "Interface font" or self.languages_open and "Keyboard languages"
         or self.section and self.section.label or "Settings"
-    if self.section then draw_section_icon(self.section.icon, 24, 17, colors.accent) end
+    if self.section then ui.pixel_icon(self.section.icon, 24, 17, colors.accent) end
     local title_x = self.section and 56 or 24
     ui.text(ui.fit(title, f.subtitle, w - title_x - 144), title_x, 15, f.subtitle, colors.text)
     ui.button_hint("{back} — Back", w - 140, 18, f.tiny, colors.muted)
@@ -171,159 +263,19 @@ function settings_screen:draw()
         local display_idx = idx - self.scroll_offset
         local y = start_y + (display_idx - 1) * row_h
         local selected = self.selected_item == idx
-        local is_scale = item.id == "scale"
-        local is_vibration_test = item.id == "vibration_test"
-        local is_minimize = item.id == "minimize"
-        local is_abxy = item.id == "abxy"
-        local is_show_mouse = item.id == "show_mouse"
-        local is_account = item.id and item.id:match("^account:")
-        local is_exit = item.id == "exit_app"
-        local is_add = item.id == "add_account"
-        local is_logout = item.id == "logout"
-        local is_update_github = item.id == "update_github"
-        local is_profile = item.id == "profile"
-        local is_theme = item.id == "theme"
-        local is_wallpaper = item.id == "wallpaper"
-
-        local danger = selected and ((is_exit and self.quit_confirm) or (is_logout and self.logout_confirm))
-        local bg = selected and (danger and colors.red or colors.accent) or colors.panel_alt
-        local ink = selected and ui.contrasting_text(bg) or nil
-        local row_text, row_secondary = ink or colors.text, ink or colors.muted
-
-        ui.retro_panel(40, y, w - 80, item_h, bg, selected and colors.accent_dark or colors.header)
+        local lift
         if selected then
             local now = love.timer.getTime()
             if self.animated_item ~= idx then self.animated_item, self.focus_at = idx, now end
-            ui.focus_corners(41, y + 1, w - 82, item_h - 2, colors.accent, ui.focus_lift(now - self.focus_at))
+            lift = ui.focus_lift(now - self.focus_at)
         end
-
-        if item.section then
-            local icon_y = y + math.floor((item_h - 21) / 2)
-            draw_section_icon(item.section.icon, 56, icon_y, ink or colors.accent)
-            ui.text(ui.fit(item.section.label, f.normal, w - 160), 90,
-                y + (item_h - f.normal:getHeight()) / 2, f.normal, row_text)
-            local arrow_x = w - 64
-            for step = 0, 4 do
-                ui.rect(arrow_x + math.min(step, 4 - step) * 2, icon_y + 5 + step * 2, 2, 2, row_secondary)
-            end
-        elseif is_exit then
-            ui.text("Quit SPgram", 60, y + 9, f.normal, row_text)
-            if self.quit_confirm then
-                ui.button_hint("{confirm} — Quit", w - 180, y + 9, f.small, row_secondary, 120, ink)
-            end
-        elseif is_scale then
-            ui.text("Interface scale", 60, y + 7, f.normal, row_text)
-            ui.text(string.format("%.1f x", self.scale), w - 100, y + 7, f.small, row_text)
-            ui.button_hint("Left/Right — Adjust   {confirm} — Apply", 60, y + item_h + 1, f.tiny, colors.muted)
-        elseif self.section == PERFORMANCE_SECTION then
-            local setting = MEMORY_ROWS[item.id]
-            local label, value
-            if setting then
-                label, value = setting[1], setting[media_settings.get(item.id) and 2 or 3]
-            elseif item.id == "memory_preset" then
-                label, value = "Memory preset", media_settings.memory_preset()
-            elseif item.id == "frame_rate" then
-                label, value = "Frame-rate cap", tostring(performance.get_fps()) .. " FPS"
-            else
-                label, value = "VSync", performance.get_vsync() and "On" or "Off"
-            end
-            local value_x = w - 58 - f.small:getWidth(value)
-            ui.text(ui.fit(label, f.normal, value_x - 74), 60, y + (item_h - f.normal:getHeight()) / 2, f.normal, row_text)
-            ui.text(value, value_x, y + (item_h - f.small:getHeight()) / 2, f.small, row_secondary)
-        elseif item.id == "calibrate_faces" then
-            ui.text("Calibrate face buttons", 60, y + 7, f.normal, row_text)
-            ui.button_hint("{confirm} — Open", w - 170, y + 7, f.small, row_secondary, 120, ink)
-        elseif item.id == "map_keys" then
-            ui.text("Map keys", 60, y + 7, f.normal, row_text)
-            ui.button_hint("{confirm} — Open", w - 170, y + 7, f.small, row_secondary, 120, ink)
-        elseif item.id == "fonts" then
-            ui.text("Interface font", 60, y + 7, f.normal, row_text)
-            ui.text(ui.get_font_family().label, w - 228, y + 7, f.small, row_secondary)
-        elseif item.id == "font_family" then
-            local option = item.option
-            local preview = ui.font_preview(option)
-            local fg = row_text
-            ui.text(option.label, 60, y + (item_h - f.normal:getHeight()) / 2, f.normal, fg)
-            ui.text("Aa 09", w - 231, y + (item_h - preview:getHeight()) / 2, preview, fg)
-            if ui.get_font_family() == option then
-                ui.text("Active", w - 122, y + 9, f.tiny, row_secondary)
-            end
-        elseif item.id == "ui_motion" then
-            ui.text("Interface motion", 60, y + 7, f.normal, row_text)
-            ui.text(media_settings.get("ui_motion") and "On" or "Off", w - 109, y + 7, f.small,
-                row_secondary)
-        elseif item.id == "keyboard_languages" then
-            ui.text("Keyboard languages", 60, y + 7, f.normal, row_text)
-            ui.button_hint("{confirm} — Configure", w - 180, y + 7, f.small, row_secondary, 130, ink)
-        elseif item.id == "keyboard_language" then
-            local enabled = keyboard_languages.enabled(item.code)
-            ui.text(item.label, 60, y + 7, f.normal, row_text)
-            ui.text(enabled and "On" or "Off", w - 110, y + 7, f.small,
-                row_secondary)
-        elseif item.id == "message_sound" or item.id == "startup_intro" then
-            local enabled = media_settings.get(item.id)
-            ui.text(item.id == "startup_intro" and "Startup intro" or "Message sound", 60, y + 7, f.normal, row_text)
-            ui.text(enabled and "On" or "Off", w - 110, y + 7, f.small, row_secondary)
-        elseif is_vibration_test then
-            ui.text("Vibration test", 60, y + 7, f.normal, row_text)
-            ui.button_hint("{confirm} — Test", w - 200, y + 7, f.small, row_secondary, nil, ink)
-        elseif is_minimize then
-            ui.text("Minimize", 60, y + 7, f.normal, row_text)
-            ui.button_hint("{confirm} — Minimize", w - 180, y + 7, f.small, row_secondary, nil, ink)
-        elseif WIFI_ACTIONS[item.id] then
-            local action = WIFI_ACTIONS[item.id]
-            ui.text(action == "enable" and "Turn Wi-Fi on" or "Turn Wi-Fi off", 60, y + 7, f.normal, row_text)
-            local state = self.tg:wifi_radio_label(action)
-            if state then
-                ui.text(state, w - 57 - f.small:getWidth(state), y + 7, f.small, row_secondary)
-            else
-                ui.button_hint("{confirm} — Apply", w - 170, y + 7, f.small, row_secondary, 120, ink)
-            end
-        elseif item.id == "reconnect" or item.id == "wifi_keep_awake" then
-            local wifi = item.id == "wifi_keep_awake"
-            ui.text(wifi and "Keep Wi-Fi awake" or "Reconnect to Telegram", 60, y + 7, f.normal, row_text)
-            local status = wifi and self.tg:wifi_power_label() or self.tg:connection_label()
-            local right = w - 57 - f.small:getWidth(status)
-            ui.text(status, right, y + 7, f.small, row_secondary)
-        elseif is_profile then
-            ui.text("My profile", 60, y + 7, f.normal, row_text)
-            ui.button_hint("{confirm} — Open", w - 180, y + 7, f.small, row_secondary, nil, ink)
-        elseif is_theme then
-            local cur = (self.callbacks.get_theme and self.callbacks.get_theme()) or "dark"
-            ui.text("Theme: " .. cur, 60, y + 7, f.normal, row_text)
-            ui.button_hint("{confirm} — Change", w - 180, y + 7, f.small, row_secondary, nil, ink)
-        elseif is_wallpaper then
-            local cur = (self.callbacks.get_wallpaper and self.callbacks.get_wallpaper()) or "off"
-            ui.text("Chat wallpaper: " .. cur, 60, y + 7, f.normal, row_text)
-            ui.button_hint("{confirm} — Toggle", w - 180, y + 7, f.small, row_secondary, nil, ink)
-        elseif is_abxy then
-            local swapped = self:abxy_layout() == "retro"
-            ui.text("Swap Confirm / Back", 60, y + 7, f.normal, row_text)
-            local layout = swapped and "On" or "Off"
-            ui.text(layout, w - 108, y + 7, f.small, row_text)
-            ui.text("Left/Right — Change", 56, y + item_h + 1, f.tiny, colors.muted)
-        elseif is_show_mouse then
-            local ms = media_settings.get("show_mouse_cursor")
-            ui.text("Mouse pointer", 60, y + 7, f.normal, row_text)
-            ui.text(ms and "On" or "Off", w - 110, y + 7, f.small, row_secondary)
-            ui.text("Left/Right — Change", 60, y + item_h + 1, f.tiny, colors.muted)
-        elseif item.id == "refresh_messages" then
-            ui.text("Refresh messages", 60, y + 7, f.normal, row_text)
-            ui.button_hint("{confirm} — Refresh", w - 130, y + 7, f.small, row_secondary, nil, ink)
-        elseif is_account then
-            local account = item.account
-            ui.text(ui.fit(account.title or "Account", f.small, w - 190), 54, y + 2, f.small, row_text)
-            local status = account.key == active_key and "active"
-                or account.authorized and "saved" or "signed out"
-            ui.text(status, w - 150, y + 4, f.tiny, row_secondary)
-        elseif is_add then
-            ui.text("+ Add account", 54, y + 5, f.small, row_text)
-        elseif is_update_github then
-            ui.text("PortMaster updates", 54, y + 7, f.small, row_text)
-        elseif is_logout then
-            local logout_label = self.logout_confirm and "Confirm sign-out" or "Sign out"
-            ui.text(logout_label, 54, y + 7, f.small, row_text)
-        end
+        local label, value, arrow, sample = row_content(self, item, active_key)
+        ui.settings_row(f.normal, y, item_h, {
+            label = label, value = value, arrow = arrow, selected = selected, lift = lift,
+            value_font = value == "Aa 09" and sample or nil,
+            icon = item.section and item.section.icon or ROW_ICONS[item.account and "account" or item.id],
+            danger = (item.id == "exit_app" and self.quit_confirm) or (item.id == "logout" and self.logout_confirm),
+        })
     end
 
     local status = self.tg.action_error ~= "" and self.tg.action_error or self.tg.action_status
@@ -335,6 +287,11 @@ function settings_screen:draw()
 
     local hint_y = h - 30
     ui.button_hint("D-pad — Move or adjust   {confirm} — Select   {back} — Back", 24, hint_y, f.tiny, colors.muted)
+    if self.version then
+        local muted = colors.muted
+        ui.printf("v" .. self.version, w - 108, hint_y, 84, "right", f.tiny,
+            {muted[1], muted[2], muted[3], 0.65})
+    end
 
     if #items > max_visible then
         local scroll_h = content_h
@@ -361,30 +318,27 @@ end
 function settings_screen:draw_keymap()
     local w, h = ui.width(), ui.height()
     local f, colors = self.fonts, ui.colors
-    local panel_w = math.min(440, w - 36)
-    local row_h = math.min(39, math.floor((h - 120) / (#controller_map.actions + 1)))
-    local panel_h = row_h * (#controller_map.actions + 1) + 86
-    local x, y = math.floor((w - panel_w) / 2), math.floor((h - panel_h) / 2)
+    local visible, item_h, row_h = self:row_layout(h)
+    local count = #controller_map.actions + 1
+    local first = math.max(1, self.keymap_index - visible + 1)
     ui.rect(0, 0, w, h, colors.bg)
-    ui.retro_panel(x, y, panel_w, panel_h, colors.panel, colors.accent_dark)
-    ui.text("Map keys", x + 16, y + 13, f.subtitle, colors.text)
-    for i = 1, #controller_map.actions + 1 do
+    ui.rect(0, 0, w, 56, colors.header)
+    ui.pixel_icon(ROW_ICONS.map_keys, 24, 17, colors.accent)
+    ui.text("Map keys", 56, 15, f.subtitle, colors.text)
+    for i = first, math.min(count, first + visible - 1) do
         local action = controller_map.actions[i]
-        local top = y + 44 + (i - 1) * row_h
         local selected = self.keymap_index == i
-        ui.retro_panel(x + 12, top, panel_w - 24, row_h - 4,
-            selected and colors.accent_dark or colors.panel_alt, colors.header)
-        if selected then ui.focus_corners(x + 13, top + 1, panel_w - 26, row_h - 6, colors.accent) end
-        ui.text(action and action.label or "Reset to defaults", x + 22, top + 8, f.small, colors.text)
-        if action then
-            local state = selected and self.keymap_waiting and "Press a button" or "{" .. action.id .. "}"
-            ui.button_hint(state, x + panel_w - 120, top + 10, f.tiny,
-                selected and colors.accent or colors.muted, 98)
-        end
+        local waiting = selected and self.keymap_waiting
+        ui.settings_row(f.normal, START_Y + (i - first) * row_h, item_h, {
+            label = action and action.label or "Reset to defaults", selected = selected,
+            icon = ROW_ICONS[action and action.id or "refresh_messages"],
+            value = waiting and "Press a button" or nil,
+            binding = action and not waiting and "{" .. action.id .. "}" or nil,
+        })
     end
     local text = self.keymap_waiting and "Face buttons, START or SELECT   ← — Cancel"
         or "D-pad — Move   {confirm} — Remap   {back} — Back"
-    ui.button_hint(text, x + 12, y + panel_h - 29, f.tiny, colors.muted, panel_w - 24)
+    ui.button_hint(text, 24, h - 30, f.tiny, colors.muted, w - 48)
 end
 
 function settings_screen:draw_face_calibration()
@@ -473,7 +427,9 @@ function settings_screen:activate_item(item)
             self.callbacks.switch_account(key)
         end
     elseif item.id == "update_github" then
-        self.release_open = self.releases ~= nil
+        self.release_open = true
+        self.releases.launch_offer = false
+        self.releases.selection = 1
     elseif item.id == "add_account" then
         if self.callbacks.add_account then self.callbacks.add_account() end
     elseif item.id == "logout" then
@@ -484,8 +440,8 @@ function settings_screen:activate_item(item)
         end
     elseif item.id == "reconnect" then
         self.tg:reconnect_network()
-    elseif WIFI_ACTIONS[item.id] then
-        self.tg:set_wifi_radio(WIFI_ACTIONS[item.id])
+    elseif item.id == "wifi_radio" then
+        self.tg:set_wifi_radio("toggle")
     elseif item.id == "wifi_keep_awake" then
         self.tg:toggle_wifi_power()
     elseif item.id == "profile" then

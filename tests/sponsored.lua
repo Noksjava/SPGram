@@ -46,6 +46,43 @@ client:handle(response)
 assert(not client:get_channel_sponsors(-2, now), "a stale response cannot replace a new fetch")
 
 local S = require("src.shared.api.sponsored")
+assert(S.telegram_link("https://t.me/example") and S.telegram_link("https://example.t.me/7"))
+assert(S.telegram_link("tg://resolve?domain=example") and S.telegram_link("https://telegram.me/example"))
+assert(not S.telegram_link("https://to.me/example") and not S.telegram_link("https://t.me.example.com/example"))
+local destination
+local link_client = setmetatable({
+    current_chat_id = -2,
+    send = function(_, request, tag) requests[#requests + 1] = {request, tag}; return tag end,
+    handle_new_chat = function(_, opened) destination = opened end,
+}, {__index = TDLib})
+assert(not link_client:open_sponsor_link("https://example.com", now))
+local public = link_client:open_sponsor_link("https://t.me/example", now)
+assert(requests[#requests][1]["@type"] == "getInternalLinkType")
+link_client:handle({["@type"] = "internalLinkTypePublicChat", ["@extra"] = public.token, chat_username = "example"})
+assert(requests[#requests][1]["@type"] == "searchPublicChat" and requests[#requests][1].username == "example")
+link_client:handle({["@type"] = "chat", ["@extra"] = public.token, id = -999})
+assert(public.chat_id == -999 and destination.id == -999)
+local person = link_client:open_sponsor_link("tg://resolve?domain=fixture", now, true)
+link_client:handle({["@type"] = "internalLinkTypePublicChat", ["@extra"] = person.token, chat_username = "fixture"})
+link_client:handle({["@type"] = "chat", ["@extra"] = person.token, id = 78,
+    type = {["@type"] = "chatTypePrivate", user_id = 29}})
+assert(person.user_id == 29 and not person.chat_id)
+local invite = link_client:open_sponsor_link("https://t.me/+fixture", now)
+link_client:handle({["@type"] = "internalLinkTypeChatInvite", ["@extra"] = invite.token, invite_link = "https://t.me/+fixture"})
+assert(requests[#requests][1]["@type"] == "checkChatInviteLink")
+link_client:handle({["@type"] = "chatInviteLinkInfo", ["@extra"] = invite.token, chat_id = 0, title = "Fixture"})
+assert(invite.invite.title == "Fixture" and requests[#requests][1]["@type"] == "checkChatInviteLink")
+link_client:join_sponsor_invite(invite, now)
+assert(requests[#requests][1]["@type"] == "joinChatByInviteLink")
+local stale = invite.token
+local message = link_client:open_sponsor_link("https://t.me/example/7", now)
+link_client:handle({["@type"] = "chat", ["@extra"] = stale, id = -777})
+assert(not message.chat_id and destination.id == 78)
+link_client:handle({["@type"] = "internalLinkTypeMessage", ["@extra"] = message.token, url = "https://t.me/example/7"})
+assert(requests[#requests][1]["@type"] == "getMessageLinkInfo")
+link_client:handle({["@type"] = "messageLinkInfo", ["@extra"] = message.token, chat_id = -999, message = {id = 7}})
+assert(message.chat_id == -999 and message.message_id == 7)
+
 local bot = {id = 12, type = {["@type"] = "chatTypePrivate", user_id = 12}}
 client.users = {[12] = {type = {["@type"] = "userTypeBot"}}}
 assert(S.bot(bot, client.users) and not S.bot(bot, {}))
