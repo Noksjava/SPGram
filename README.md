@@ -16,7 +16,7 @@ You need an RG35XX device with PortMaster installed on your active storage, and 
 
 1. Download **`SPgram-PortMaster-v0.2.67.zip`** and its matching **`.zip.sha256`** file from the release assets. Keep the installer zipped. [SPgram releases](https://github.com/Noksjava/SPGram/releases)
 2. Verify the download on your computer using one of the commands below.
-3. Copy the ZIP to **`/userdata/roms/ports/autoinstall/`**. On a readable KNULLI storage card, open the **SHARE** partition and use `roms/ports/autoinstall/`. On Windows, you can also open **`\\KNULLI\share`** in File Explorer while the handheld is on the same network. Use your device's hostname if you changed it. Create the `autoinstall` folder if needed. [PortMaster offline installs](https://portmaster.games/installation/installing-ports/#option-2-offline-installation)
+3. Copy the ZIP to **`/userdata/roms/ports/autoinstall/`**. On a readable storage card, open the **SHARE** partition and use `roms/ports/autoinstall/`. On Windows, you can also open **`\share`** in File Explorer while the handheld is on the same network. Use your device's hostname if you changed it. Create the `autoinstall` folder if needed. [PortMaster offline installs](https://portmaster.games/installation/installing-ports/#option-2-offline-installation)
 4. Start **PortMaster** on the handheld. It picks up the ZIP and installs SPgram. Exit PortMaster, then launch **SPgram** from EmulationStation's **Ports** category. If it is missing, open **START → Game Settings → Update Gamelists** and check Ports again. 
 
 Verify the ZIP, if necessary.
@@ -65,10 +65,10 @@ After Telegram confirms sign out, SPgram removes that account's local database, 
 | SPgram is missing from Ports | Check that the untouched installer ZIP went into the active storage's `roms/ports/autoinstall/` folder. Launch PortMaster again and refresh the gamelist. |
 | SPgram returns immediately to Ports | Check `telegramsp/conf/launcher.log` in your ports folder. If it reports a missing runtime, open **Options → Runtime Manager** in PortMaster. [PortMaster runtime help](https://portmaster.games/installation/installing-ports/#troubleshooting) |
 | The app asks for API credentials | Confirm you installed the full PortMaster ZIP from the project's release assets. |
-| Telegram stops loading after a Wi-Fi drop | Check KNULLI's network status, then use **Settings → Advanced → Reconnect to Telegram**. |
+| Telegram stops loading after a Wi-Fi drop | Check device's network status, then use **Settings → Advanced → Reconnect to Telegram**. |
 | Sign-in asks for email verification | This alpha supports QR and phone sign-in, including passwords. Email verification in the client is still unsupported. |
 
-When reporting a problem, include the SPgram version, handheld model, KNULLI version, what you pressed, and what happened. Share relevant log lines after removing private account information. [Report an issue](https://github.com/Noksjava/SPGram/issues)
+When reporting a problem, include the SPgram version, handheld model, firmware version, what you pressed, and what happened. Share relevant log lines after removing private account information. [Report an issue](https://github.com/Noksjava/SPGram/issues)
 
 ## Future plans
 
