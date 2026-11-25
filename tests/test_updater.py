@@ -185,7 +185,7 @@ class UpdateTest(unittest.TestCase):
             signed_assets = release["assets"]
             full_name = "SPgram-PortMaster-v0.2.0.zip"
             release["assets"] = [{"name": full_name, "browser_download_url": releases.address("0.2.0", full_name)}]
-            self.assertEqual(releases.check(), {"latest": "0.2.0", "manual_update": True})
+            self.assertEqual(releases.check(), {"latest": "0.2.0", "available": False, "signed_required": True})
             release["assets"] = signed_assets
             good_proof = proof
             proof = bytes([proof[0] ^ 1]) + proof[1:]
@@ -200,8 +200,11 @@ class UpdateTest(unittest.TestCase):
             self.assertFalse(releases.archive.exists())
             releases.cancel.unlink()
             self.assertTrue(releases.download()["verified"])
+            script = ("import os; from pathlib import Path; "
+                      "marker = os.getenv('TELEGRAM_SP_STARTUP_OK'); "
+                      "Path(marker).touch() if marker else exit(41)")
             with patch.object(updater.platform, "machine", return_value="aarch64"):
-                self.assertEqual(self.store.run([sys.executable, "-c", "raise SystemExit(41)"]), 0)
+                self.assertEqual(self.store.run([sys.executable, "-c", script]), 0)
             self.assertEqual(self.store.read()["active"], "0.2.0")
             release["prerelease"] = True
             with self.assertRaisesRegex(ValueError, "Unexpected release"):
@@ -232,8 +235,190 @@ class UpdateTest(unittest.TestCase):
                 releases.check()
         self.assertFalse(releases.archive.exists())
 
+    def github_installer(self):
+        app, _ = self.package()
+        name = "SPgram-PortMaster-v0.2.0.zip"
+        archive = self.root / name
+        with ZipFile(app) as source, ZipFile(archive, "w") as package:
+            for entry in source.namelist():
+                package.writestr(updater.APP_PREFIX + entry, source.read(entry))
+            package.writestr(updater.APP_PREFIX + "SIGN_IN_PREVIEW", b"0\n")
+            package.writestr("SPgram.sh", b"launcher from archive")
+            package.writestr("telegramsp/conf/session", b"session from archive")
+            package.writestr("telegramsp/updater.py", b"updater from archive")
+        data = archive.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        releases = updater.Releases(self.store, "0.1.0")
+        url = releases.tag_address("0.2.0-I", name)
+        asset = {"name": name, "browser_download_url": url, "state": "uploaded",
+                 "size": len(data), "digest": "sha256:" + digest}
+        checksum = {"name": name + ".sha256", "browser_download_url": url + ".sha256", "state": "uploaded"}
+        assets = [asset, checksum]
+        transfer = {url: data, url + ".sha256": f"{digest}  {name}\n".encode()}
+
+        def fetch(request, host, limit, write, cancelled=lambda: False):
+            if host == "api.github.com":
+                self.assertEqual(request, "https://api.github.com/repos/Noksjava/SPGram/releases/latest")
+                payload = json.dumps({"draft": False, "prerelease": False,
+                                      "tag_name": "0.2.0-I", "assets": assets}).encode()
+            else:
+                payload = transfer[request]
+            self.assertLessEqual(len(payload), limit)
+            if cancelled():
+                raise ValueError("Download cancelled")
+            write(payload, len(payload))
+            return len(payload)
+
+        return releases, assets, transfer, fetch
+
+    @patch.object(updater.platform, "machine", return_value="aarch64")
+    def test_github_installer_download_and_restart(self, machine):
+        releases, assets, _, fetch = self.github_installer()
+        assets[0].pop("digest")
+        launches = self.root / "launches"
+        script = ("import os, sys; from pathlib import Path; "
+                  "version = Path(sys.argv[2], 'VERSION').read_text(); "
+                  "with_log = Path(sys.argv[1]); "
+                  "with_log.write_text((with_log.read_text() if with_log.exists() else '') + version + '\\n'); "
+                  "sys.exit(41) if version == '0.1.0' else Path(os.environ['TELEGRAM_SP_STARTUP_OK']).touch()")
+        with patch.object(updater, "fetch", side_effect=fetch):
+            self.assertTrue(releases.check()["available"])
+            self.assertTrue(releases.download()["verified"])
+            self.assertEqual(self.store.run([sys.executable, "-c", script, str(launches)]), 0)
+        self.assertEqual(launches.read_text().splitlines(), ["0.1.0", "0.2.0"])
+        self.assertEqual(self.store.read()["active"], "0.2.0")
+        self.assertFalse(self.store.read()["trial"])
+        self.assertFalse(releases.archive.exists())
+        self.assertFalse((self.root / "updater.py").exists())
+        self.assertEqual(self.session.read_bytes(), b"synthetic state")
+
+    @patch.object(updater.platform, "machine", return_value="aarch64")
+    def test_github_installer_rejects_tampering(self, machine):
+        releases, assets, transfer, fetch = self.github_installer()
+        with patch.object(updater, "fetch", side_effect=fetch):
+            url = assets[0]["browser_download_url"]
+            digest = assets[0].pop("digest")
+            checksum = assets.pop()
+            with self.assertRaisesRegex(ValueError, "No SHA-256"):
+                releases.check()
+            assets[0]["digest"] = digest
+            self.assertTrue(releases.check()["available"])
+            assets.append(checksum)
+            transfer[url + ".sha256"] = b"0" * 64 + f"  {assets[0]['name']}\n".encode()
+            with self.assertRaisesRegex(ValueError, "checksums disagree"):
+                releases.check()
+            assets.pop()
+            self.assertTrue(releases.check()["available"])
+            transfer[url] = b"0" * len(transfer[url])
+            with self.assertRaisesRegex(ValueError, "failed verification"):
+                releases.download()
+        self.assertFalse(releases.archive.exists())
+        self.assertEqual(self.store.read()["active"], "base")
+
+    @patch.object(updater.platform, "machine", return_value="aarch64")
+    def test_github_installer_unhealthy_restart_rolls_back(self, machine):
+        releases, _, _, fetch = self.github_installer()
+        script = ("import os; "
+                  "exit(0 if os.getenv('TELEGRAM_SP_UPDATE_RESULT') == 'rolled-back' "
+                  "else 1 if os.getenv('TELEGRAM_SP_STARTUP_OK') else 41)")
+        with patch.object(updater, "fetch", side_effect=fetch):
+            self.assertTrue(releases.check()["available"])
+            self.assertTrue(releases.download()["verified"])
+            self.assertEqual(self.store.run([sys.executable, "-c", script]), 0)
+        self.assertEqual(self.store.read()["active"], "base")
+        self.assertEqual(self.session.read_bytes(), b"synthetic state")
+
+    @patch.object(updater.platform, "machine", return_value="aarch64")
+    def test_github_rollback_picks_three_and_persists_across_restarts(self, machine):
+        _, assets, _, fetch = self.github_installer()
+        (self.root / "gamedata" / "VERSION").write_text("0.2.1", encoding="ascii")
+        releases = updater.Releases(self.store, "0.2.1", rollback=True)
+        candidate = {"draft": False, "prerelease": False, "tag_name": "0.2.0-I", "assets": assets}
+
+        def other_release(label, **fields):
+            return {"draft": False, "prerelease": False, "tag_name": "v" + label,
+                    "assets": [{"name": f"SPgram-PortMaster-v{label}.zip", "digest": "sha256:" + "0" * 64}],
+                    **fields}
+
+        listing = [other_release(label) for label in ("0.1.8", "0.2.3", "0.1.9", "0.1.10", "0.2.1")]
+        listing.append(dict(other_release("0.1.11"), prerelease=True))
+        listing.extend([candidate, candidate])
+
+        def metadata(endpoint):
+            if endpoint == "?per_page=30&page=1":
+                return listing
+            self.assertEqual(endpoint, "/tags/0.2.0-I")
+            return candidate
+
+        log = self.root / "rollback-launches"
+        script = ("import os, sys; from pathlib import Path; "
+                  "installed = Path(sys.argv[2], 'VERSION').read_text(); "
+                  "log = Path(sys.argv[1]); seen = log.read_text() if log.exists() else ''; "
+                  "log.write_text(seen + installed + '\\n'); "
+                  "marker = os.getenv('TELEGRAM_SP_STARTUP_OK'); "
+                  "Path(marker).touch() if marker else sys.exit(43 if not seen else 0)")
+        command = [sys.executable, "-c", script, str(log)]
+        with patch.object(releases, "metadata", side_effect=metadata), patch.object(updater, "fetch", side_effect=fetch):
+            self.assertEqual(releases.list_rollback()["versions"], ["0.2.0", "0.1.10", "0.1.9"])
+            with self.assertRaisesRegex(ValueError, "outside"):
+                releases.download_rollback("0.1.8")
+            self.assertTrue(releases.download_rollback("0.2.0")["verified"])
+            self.assertEqual(self.store.run(command), 0)
+        self.assertEqual(self.store.run(command), 0)
+        self.assertEqual(log.read_text().splitlines(), ["0.2.1", "0.2.0", "0.2.0"])
+        self.assertEqual(self.store.read()["active"], "0.2.0")
+        self.assertEqual(self.store.read()["previous"], "base")
+        self.assertEqual(self.session.read_bytes(), b"synthetic state")
+        legacy_return = ("import os; "
+                         "assert os.environ['TELEGRAM_SP_CAN_ROLLBACK'] == '1'; "
+                         "exit(42)")
+        self.assertEqual(self.store.run([sys.executable, "-c", legacy_return]), 0)
+        self.assertEqual(self.store.read()["active"], "base")
+        self.assertEqual(self.store.run(command), 0)
+        self.assertEqual(log.read_text().splitlines()[-1], "0.2.1")
+        self.assertEqual(self.store.run([sys.executable, "-c", legacy_return]), 0)
+        self.assertEqual(self.store.read()["active"], "0.2.0")
+        (self.root / "gamedata" / "VERSION").write_text("0.2.2", encoding="ascii")
+        self.assertEqual(self.store.run(command), 0)
+        self.assertEqual(self.store.read()["active"], "base")
+
+    @patch.object(updater.platform, "machine", return_value="aarch64")
+    def test_github_rollback_unhealthy_trial_relaunches_current_version(self, machine):
+        _, assets, _, fetch = self.github_installer()
+        (self.root / "gamedata" / "VERSION").write_text("0.2.1", encoding="ascii")
+        releases = updater.Releases(self.store, "0.2.1", rollback=True)
+        releases.options.write_text('{"0.2.0":"0.2.0-I"}', encoding="ascii")
+        candidate = {"draft": False, "prerelease": False, "tag_name": "0.2.0-I", "assets": assets}
+        with patch.object(releases, "metadata", return_value=candidate), patch.object(updater, "fetch", side_effect=fetch):
+            self.assertTrue(releases.download_rollback("0.2.0")["verified"])
+            script = ("import os; "
+                      "exit(0 if os.getenv('TELEGRAM_SP_UPDATE_RESULT') == 'rolled-back' "
+                      "else 1 if os.getenv('TELEGRAM_SP_STARTUP_OK') else 43)")
+            self.assertEqual(self.store.run([sys.executable, "-c", script]), 0)
+        self.assertEqual(self.store.read()["active"], "base")
+        self.assertEqual(self.session.read_bytes(), b"synthetic state")
+
+    @patch.object(updater.platform, "machine", return_value="aarch64")
+    def test_github_rollback_with_a_pinned_key_skips_unsigned_releases(self, machine):
+        self.releases()
+        releases = updater.Releases(self.store, "0.2.2", rollback=True)
+        listing = [
+            {"tag_name": "v0.2.1", "draft": False, "prerelease": False, "assets": [
+                {"name": "SPgram-PortMaster-v0.2.1.zip", "digest": "sha256:" + "0" * 64},
+            ]},
+            {"tag_name": "v0.2.0", "draft": False, "prerelease": False, "assets": [
+                {"name": name} for name in
+                ("release-manifest.json", updater.SIGNATURE_NAME, "SPgram-Update-v0.2.0.zip")
+            ]},
+        ]
+        with patch.object(releases, "metadata", return_value=listing):
+            self.assertEqual(releases.list_rollback()["versions"], ["0.2.0"])
+            with self.assertRaisesRegex(ValueError, "outside"):
+                releases.download_rollback("0.2.1")
+
     def test_manifest_authentication_has_no_unsigned_fallback(self):
         self.assertFalse(self.store.update_authentication_available())
+        (self.root / updater.UPDATE_KEY).write_bytes(b"invalid")
         with self.assertRaisesRegex(ValueError, "unavailable"):
             updater.Releases(self.store, "0.1.0")
         releases = self.releases()

@@ -8,44 +8,49 @@ function Release.new(fonts)
     local python = os.getenv("TELEGRAM_SP_UPDATE_PYTHON")
     if not love.thread or not love.thread.newChannel then return nil end
     local version = love.filesystem.read("VERSION") or ""
-    local signed = port and python and os.getenv("TELEGRAM_SP_SIGNED_UPDATES") == "1"
+    local update_result = os.getenv("TELEGRAM_SP_UPDATE_RESULT")
+    local error_status = update_result == "install-failed" and "Update could not be installed. Try downloading it again."
+        or update_result == "rolled-back" and "The update failed to start. The previous version was restored."
     return setmetatable({
         fonts = fonts, port = port or "", python = python or "", version = version:match("^%s*(%d+%.%d+%.%d+)%s*$") or "0.0.0",
         directory = port and port .. "/conf/update-download/", selection = 1, channel = love.thread.newChannel(),
-        rollback = port and python and os.getenv("TELEGRAM_SP_CAN_ROLLBACK") == "1",
-        signed = signed,
+        supported = port ~= nil and python ~= nil,
+        status = error_status or ((not port or not python) and "Updates are unavailable in this launch." or nil),
+        status_tone = error_status and "error" or nil,
+        launch_offer = error_status and true or false,
+        update_error = error_status,
     }, Release)
 end
 
-function Release:start(operation, on_launch)
-    if self.thread or (operation == "download" and not self.signed) then return end
-    self.manual_help = nil
+function Release:start(operation, on_launch, target)
+    if not self.supported or self.thread then return end
+    self.downloading = operation == "download" or operation == "rollback-download"
+    self.transfer_dir = operation == "rollback-download" and self.directory .. "rollback/" or self.directory
     if operation == "check" then
-        if self.checked_at and love.timer.getTime() - self.checked_at < 60 then return end
-        self.available, self.verified, self.manual_update, self.notes = false, false, false, nil
-    else
-        os.remove(self.directory .. "cancel")
-        os.remove(self.directory .. "progress")
+        self.available, self.verified, self.notes = false, false, nil
+    elseif self.downloading then
+        os.remove(self.transfer_dir .. "cancel")
+        os.remove(self.transfer_dir .. "progress")
+        if target then self.rollback_target, self.rollback_ready = target, nil end
     end
     self.thread = love.thread.newThread("threads/release_worker.lua")
-    local worker_operation = not self.signed and operation == "check" and "discover" or operation
-    self.thread:start(self.python, self.port, self.version, worker_operation, self.channel)
+    self.thread:start(self.python, self.port, self.version, operation, self.channel, target or "")
     self.operation, self.on_launch = operation, on_launch == true
     self.cancelled = false
     self.status_tone = nil
-    self.status = operation == "check" and "Checking GitHub…" or "Downloading update…"
+    self.status = self.downloading and "Downloading release…" or "Checking GitHub…"
 end
 
 function Release:poll()
     if not self.thread then return end
     local reply = self.channel:pop()
     if not reply and self.thread:isRunning() then
-        if self.operation == "download" and not self.cancelled then
-            local handle = io.open(self.directory .. "progress", "rb")
+        if self.downloading and not self.cancelled then
+            local handle = io.open(self.transfer_dir .. "progress", "rb")
             if handle then
                 local percent = tonumber(handle:read(4))
                 handle:close()
-                if percent then self.status = "Downloading update… " .. percent .. "%" end
+                if percent then self.status = "Downloading release… " .. percent .. "%" end
             end
         end
         return
@@ -54,21 +59,29 @@ function Release:poll()
     self.thread = nil
     if self.cancelled then
         self.status = "Download cancelled."
-    elseif reply.failed then
+    elseif reply.failed or (self.downloading and not reply.verified) then
         self.status_tone = "error"
-        self.status = self.operation == "check" and "Could not check or verify releases. Check Wi-Fi."
-            or "Download failed or could not be verified. Check Wi-Fi and free space."
-    elseif self.signed and self.operation == "download" and reply.verified then
-        self.verified = true
+        self.status = self.downloading and "Download failed or could not be verified. Check Wi-Fi and free space."
+            or "Could not check GitHub releases. Check Wi-Fi."
+    elseif self.downloading and reply.verified then
         self.status_tone = "success"
-        self.status = "Verified. Select Install and quit to apply."
+        if self.operation == "rollback-download" then
+            self.rollback_ready = self.rollback_target
+            self.status = "v" .. self.rollback_ready .. " verified. Install when ready."
+        else
+            self.verified = true
+            self.status = "Update verified. Install when ready."
+        end
+    elseif self.operation == "rollback-list" then
+        self.rollback_versions = reply.versions or {}
+        self.status = #self.rollback_versions > 0 and "Choose a version to download."
+            or "No compatible older release was found."
     else
-        self.checked_at = love.timer.getTime()
-        self.latest, self.available, self.manual_update, self.notes = reply.latest, self.signed and reply.available, reply.manual_update, reply.notes
-        self.launch_offer = self.on_launch and (self.available == true or reply.manual_update == true)
-        local newer = self.available or self.manual_update
-        self.status_tone = newer and "new" or nil
-        self.status = newer and ("New release available · v" .. self.latest)
+        self.latest, self.available, self.notes = reply.latest, reply.available, reply.notes
+        self.launch_offer = self.on_launch and self.available == true
+        self.status_tone = self.available and "new" or nil
+        self.status = self.available and ("New release available · v" .. self.latest)
+            or reply.signed_required and "This installation requires a signed release."
             or reply.installed_ahead and "This build is newer than the latest public release."
             or reply.no_release and "No public installer was found."
             or "Already up to date."
@@ -76,30 +89,28 @@ function Release:poll()
 end
 
 function Release:items()
+    if self.rollback_open then
+        local items = {}
+        for index, version in ipairs(self.rollback_versions) do
+            items[index] = (version == self.rollback_ready and "Install and restart · v" or "Download v") .. version
+        end
+        items[#items + 1] = "Back"
+        return items
+    end
     return {
         "Check for updates",
-        self.verified and "Install and quit" or self.available and "Download update"
-            or self.manual_update and "Install instructions" or "No update selected",
+        self.verified and "Install and restart" or self.available and "Download update" or "No update available",
         "Check at launch: " .. (preferences.get("check_updates_on_launch") and "On" or "Off"),
-        self.rollback and "Roll back and quit" or "Rollback unavailable",
+        self.supported and "Previous releases" or "Rollback unavailable",
         "Back",
     }
 end
 
 function Release:keypressed(key)
     self:poll()
-    if self.manual_help then
-        if key == "escape" or key == "b" or key == "return" or key == "kpenter" or key == "a" then
-            self.manual_help = nil
-        elseif key == "up" or key == "down" then
-            self.manual_scroll = math.max(0, math.min(self.manual_scroll_max or 0,
-                self.manual_scroll + (key == "up" and -24 or 24)))
-        end
-        return
-    end
     if key == "escape" or key == "b" then
-        if self.thread and self.operation == "download" then
-            local handle = io.open(self.directory .. "cancel", "wb")
+        if self.thread and self.downloading then
+            local handle = io.open(self.transfer_dir .. "cancel", "wb")
             if handle then
                 handle:close()
                 self.cancelled = true
@@ -108,12 +119,26 @@ function Release:keypressed(key)
             end
             return
         end
+        if self.rollback_open then
+            if self.thread then return end
+            self.rollback_open, self.selection = false, 4
+            self.status, self.status_tone = self.update_status, self.update_status_tone
+            return
+        end
         return "back"
     end
+    local last = self.rollback_open and (#self.rollback_versions + 1) or 5
     if key == "up" then self.selection = math.max(1, self.selection - 1) end
-    if key == "down" then self.selection = math.min(5, self.selection + 1) end
+    if key == "down" then self.selection = math.min(last, self.selection + 1) end
     if key ~= "return" and key ~= "kpenter" and key ~= "a" then return end
-    if self.selection == 5 then return self:keypressed("escape") end
+    if self.selection == last then return self:keypressed("escape") end
+    if self.rollback_open then
+        if self.thread then return end
+        local target = self.rollback_versions[self.selection]
+        if target == self.rollback_ready then love.event.quit(43)
+        elseif target then self:start("rollback-download", false, target) end
+        return
+    end
     if self.selection == 3 then
         if not preferences.toggle("check_updates_on_launch", true) then
             self.on_launch, self.launch_offer = false, false
@@ -125,12 +150,11 @@ function Release:keypressed(key)
         self:start("check")
     elseif self.selection == 2 then
         if self.verified then love.event.quit(41)
-        elseif self.available then self:start("download")
-        elseif self.manual_update then
-            self.manual_help, self.manual_scroll, self.manual_scroll_max = true, 0, 0
-        end
-    elseif self.selection == 4 and self.rollback then
-        love.event.quit(42)
+        elseif self.available then self:start("download") end
+    elseif self.selection == 4 and self.supported then
+        self.rollback_open, self.selection, self.rollback_versions, self.rollback_ready = true, 1, {}, nil
+        self.update_status, self.update_status_tone = self.status, self.status_tone
+        self:start("rollback-list")
     end
 end
 
@@ -142,49 +166,14 @@ local UPDATE_ICONS = {
     {"0010000", "0100000", "1111111", "0100001", "0010001", "0000001", "0000000"},
 }
 
-function Release:draw_install_help(w, h)
-    local f, colors = self.fonts, ui.colors
-    local x, width = 24, w - 48
-    local title = ui.fit("Install SPgram v" .. self.latest, f.subtitle, width - 32)
-    ui.rect(0, 0, w, h, colors.bg)
-    ui.rect(0, 0, w, 56, colors.header)
-    ui.pixel_icon(UPDATE_ICONS[2], 24, 17, colors.accent)
-    ui.text(title, 56, 15, f.subtitle, colors.text)
-    local lines = {
-        "Download the installer and its .sha256 file from:",
-        "github.com/Noksjava/SPGram/releases",
-        "SPgram-PortMaster-v" .. self.latest .. ".zip",
-        "Verify the checksum, then copy the ZIP to roms/ports/autoinstall and open PortMaster.",
-    }
-    local top, viewport = 69, math.max(1, h - 69 - 36)
-    local rows, height = {}, 0
-    for index, line in ipairs(lines) do
-        local font = (index == 2 or index == 3) and f.tiny or f.small
-        local _, wrapped = font:getWrap(line, width)
-        rows[index] = {text = line, font = font, offset = height}
-        height = height + #wrapped * font:getHeight() + 7
-    end
-    self.manual_scroll_max = math.max(0, height - 7 - viewport)
-    self.manual_scroll = math.min(self.manual_scroll, self.manual_scroll_max)
-    love.graphics.setScissor(x, top, width, viewport)
-    for index, row in ipairs(rows) do
-        ui.printf(row.text, x, top + row.offset - self.manual_scroll, width, "left",
-            row.font, index == 2 and colors.accent or colors.text)
-    end
-    love.graphics.setScissor()
-    local hint = self.manual_scroll_max > 0 and "↑/↓ — Scroll   {back} — Back" or "{back} — Back"
-    ui.button_hint(hint, x, h - 29, f.tiny, colors.muted)
-end
-
 function Release:draw()
     self:poll()
     local fonts, colors = self.fonts, ui.colors
     local w, h = ui.width(), ui.height()
-    if self.manual_help then self:draw_install_help(w, h); return end
     ui.rect(0, 0, w, h, colors.bg)
     ui.rect(0, 0, w, 56, colors.header)
     ui.pixel_icon(UPDATE_ICONS[2], 24, 17, colors.accent)
-    ui.text("SPgram updates", 56, 15, fonts.subtitle, colors.text)
+    ui.text(self.rollback_open and "Previous releases" or "SPgram updates", 56, 15, fonts.subtitle, colors.text)
     ui.rect(0, 54, w, 2, colors.accent_dark)
     local version_w = math.floor((w - 88) / 2)
     local function version_panel(label, x, highlight)
@@ -193,7 +182,9 @@ function Release:draw()
             fonts.small, highlight and colors.accent or colors.text)
     end
     version_panel("Installed v" .. self.version, 40)
-    version_panel(self.latest and "Latest v" .. self.latest or "Latest —", 48 + version_w, self.status_tone == "new")
+    if not self.rollback_open then
+        version_panel(self.latest and "Latest v" .. self.latest or "Latest —", 48 + version_w, self.status_tone == "new")
+    end
     local items = self:items()
     local top = 104
     local row_h = ui.settings_row_height(fonts.normal)
@@ -201,16 +192,16 @@ function Release:draw()
     local _, status_lines = fonts.small:getWrap(self.status or "", w - 104)
     local status_h = math.max(1, #status_lines) * fonts.small:getHeight() + 12
     local footer_h = 36 + (self.status and status_h + 10 or 0)
-        + (self.manual_update and fonts.small:getHeight() + 6 or 0)
     local visible = math.min(#items, math.max(1, math.floor((h - top - footer_h) / step)))
     local first = math.max(1, self.selection - visible + 1)
     for index = first, first + visible - 1 do
         local label, value = items[index], nil
-        if index == 3 then
+        if index == 3 and not self.rollback_open then
             label, value = "Check at launch", preferences.get("check_updates_on_launch") and "On" or "Off"
         end
         ui.settings_row(fonts.normal, top + (index - first) * step, row_h, {
-            label = label, value = value, selected = index == self.selection, icon = UPDATE_ICONS[index],
+            label = label, value = value, selected = index == self.selection,
+            icon = UPDATE_ICONS[self.rollback_open and (index == #items and 5 or 4) or index],
         })
     end
     local below = top + visible * step + 4
@@ -223,11 +214,7 @@ function Release:draw()
         ui.printf(self.status, 52, below + 6, w - 104, "left", fonts.small, colors.text)
         below = below + status_h + 6
     end
-    if self.manual_update then
-        ui.text(ui.fit("github.com/Noksjava/SPGram/releases", fonts.small, w - 80), 40, below, fonts.small, colors.muted)
-        below = below + fonts.small:getHeight() + 6
-    end
-    if self.notes and self.notes ~= "" and below + fonts.small:getHeight() < h - 36 then
+    if not self.rollback_open and self.notes and self.notes ~= "" and below + fonts.small:getHeight() < h - 36 then
         ui.text("Release notes", 40, below, fonts.small, colors.text)
         below = below + fonts.small:getHeight() + 4
         love.graphics.setScissor(40, below, w - 80, math.max(0, h - 36 - below))

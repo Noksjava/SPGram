@@ -2,7 +2,11 @@
 
 SPgram is an unofficial Telegram client for the G35XX series with PortMaster. It uses the Telegram API and connects to your existing Telegram account. Its retro interface is designed for the handheld's 640×480 screen and built-in controls, including an on-screen keyboard for typing and signing in.
 
+<<<<<<< Updated upstream
 **Alpha · v0.2.68 · RG35XX SP with KNULLI Gladiator II**
+=======
+**Alpha · v0.2.69
+>>>>>>> Stashed changes
 
 - Browse direct messages, groups, channels, Saved Messages, and Archived Chats. Search conversations and return to your reading position.
 - Open long posts in a scrollable reader. See text and attached media together, inspect photos and GIFs, and follow supported quotes back to their original messages.
@@ -14,10 +18,15 @@ SPgram is an unofficial Telegram client for the G35XX series with PortMaster. It
 
 You need an RG35XX device with PortMaster installed on your active storage, and Wi-Fi for Telegram sign-in and use. This alpha targets that device and firmware combination. Compatibility was tested on an RG35XXSP running Knulli Gladiator II, for now other PortMaster devices and firmware is unverified.
 
-1. Download **`SPgram-PortMaster-v0.2.68.zip`** and its matching **`.zip.sha256`** file from the release assets. Keep the installer zipped. [SPgram releases](https://github.com/Noksjava/SPGram/releases)
+1. Download **`SPgram-PortMaster-v0.2.59.zip`** and its matching **`.zip.sha256`** file from the release assets. Keep the installer zipped. [SPgram releases](https://github.com/Noksjava/SPGram/releases)
 2. Verify the download on your computer using one of the commands below.
+<<<<<<< Updated upstream
 3. Copy the ZIP to **`/userdata/roms/ports/autoinstall/`**. On a readable KNULLI storage card, open the **SHARE** partition and use `roms/ports/autoinstall/`. On Windows, you can also open **`\\KNULLI\share`** in File Explorer while the handheld is on the same network. Use your device's hostname if you changed it. Create the `autoinstall` folder if needed. [PortMaster offline installs](https://portmaster.games/installation/installing-ports/#option-2-offline-installation)
 4. Start **PortMaster** on the handheld. It picks up the ZIP and installs SPgram. Exit PortMaster, then launch **SPgram** from EmulationStation's **Ports** category. If it is missing, open **START → Game Settings → Update Gamelists** and check Ports again.
+=======
+3. Copy the ZIP to **`/userdata/roms/ports/autoinstall/`**. On a readable storage card, open the **SHARE** partition and use `roms/ports/autoinstall/`. On Windows, you can also open **`\\[devicename]\share`** in File Explorer while the handheld is on the same network. Use your device's hostname if you changed it. Create the `autoinstall` folder if needed. [PortMaster offline installs](https://portmaster.games/installation/installing-ports/#option-2-offline-installation)
+4. Start **PortMaster** on the handheld. It picks up the ZIP and installs SPgram. Exit PortMaster, then launch **SPgram** from EmulationStation's **Ports** category. If it is missing, open **START → Game Settings → Update Gamelists** and check Ports again. 
+>>>>>>> Stashed changes
 
 Verify the ZIP, if necessary.
 
@@ -42,11 +51,7 @@ If Confirm and Back feel swapped, open **Settings → Controls → Calibrate fac
 
 Videos download when you choose to play them. The full installer includes a video converter that prepares supported clips for the handheld, so a large file may take time before playback starts. Closing a video or audio player clears its temporary playback files. The photo cache is limited to 256 MiB, with a target local storage retention of one day.
 
-If busy chats feel slow, try **Settings → Visual settings → Performance → Low memory**. That preset uses initials in place of avatars, still previews in place of inline animations, on-demand images, and a smaller decoded texture cache. You can set those options individually.
-
-## Updates and account data
-
-Update with the next full PortMaster ZIP using the same installation steps. In v0.2.61 and later, open **Settings → Updates** to see the installed and latest published versions, check manually, or turn off **Check at launch**. In-app installation requires a build with the trusted release key and a signed update. Keep `/userdata/roms/ports/telegramsp/conf/` to retain your session and settings.
+If busy chats feel slow, try **Settings → Visual settings → Performance → Low memory**. That preset uses initials in place of avatars, still previews in place of inline animations, on-demand images and a smaller decoded texture cache. You can set those options individually.
 
 ## Security and account privacy
 

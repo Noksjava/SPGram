@@ -1,4 +1,4 @@
-"""Verify, stage and select SPgram application-only packages."""
+"""Verify, stage and select SPgram updates."""
 
 import argparse
 from contextlib import contextmanager
@@ -36,8 +36,11 @@ ROOT_FILES = {
 REQUIRED = ROOT_FILES - {"res/telegram.png", "app-credentials.ini", "SIGN_IN_PREVIEW"}
 TARGET = {"os": "KNULLI", "arch": "aarch64", "runtime": "love_11.5",
           "min_firmware": "Gladiator II"}
-INSTALL_EXIT, ROLLBACK_EXIT = 41, 42
+INSTALL_EXIT, ROLLBACK_EXIT, GITHUB_ROLLBACK_EXIT = 41, 42, 43
 CDN = {"release-assets.githubusercontent.com", "objects.githubusercontent.com"}
+APP_PREFIX = "telegramsp/gamedata/"
+RELEASE_TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
+INSTALLER = re.compile(r"SPgram-PortMaster-v(" + VERSION.pattern + r")\.zip")
 
 
 def version(value):
@@ -180,8 +183,12 @@ def fetch(url, initial_host, limit, write, cancelled=lambda: False):
 
 
 class Releases:
-    def __init__(self, store, installed):
-        if not store.update_authentication_available():
+    def __init__(self, store, installed, rollback=False):
+        self.store = store
+        self.rollback = rollback
+        self.key = store.port / UPDATE_KEY
+        self.signed = self.key.exists() or self.key.is_symlink()
+        if self.signed and not store.update_authentication_available():
             raise ValueError("Signed updates are unavailable on this installation")
         repository_path = store.port / UPDATE_REPOSITORY
         if repository_path.is_symlink():
@@ -196,28 +203,98 @@ class Releases:
         self.installed = installed
         self.directory = store.port / "conf" / "update-download"
         self.directory.mkdir(exist_ok=True)
+        if self.directory.is_symlink() or not self.directory.is_dir():
+            raise ValueError("Invalid update download directory")
+        if rollback:
+            self.directory = self.directory / "rollback"
+            self.directory.mkdir(exist_ok=True)
+            if self.directory.is_symlink() or not self.directory.is_dir():
+                raise ValueError("Invalid rollback download directory")
+        self.options = self.directory / "options.json"
         self.manifest = self.directory / "manifest.json"
         self.signature = self.directory / SIGNATURE_NAME
-        self.key = store.port / UPDATE_KEY
+        self.github_asset = self.directory / "github-asset.json"
         self.archive = self.directory / "verified.zip"
         self.cancel = self.directory / "cancel"
         self.progress = self.directory / "progress"
 
     def address(self, label, name):
-        return f"https://github.com/{self.repository}/releases/download/v{label}/{name}"
+        return self.tag_address("v" + label, name)
+
+    def tag_address(self, tag, name):
+        return f"https://github.com/{self.repository}/releases/download/{tag}/{name}"
+
+    def metadata(self, endpoint):
+        data = bytearray()
+        fetch(f"https://api.github.com/repos/{self.repository}/releases{endpoint}",
+              "api.github.com", 2 * 1024 * 1024, lambda chunk, _: data.extend(chunk))
+        return json.loads(data)
+
+    def accepts(self, label):
+        target, installed = version(label), version(self.installed)
+        return target < installed if self.rollback else target > installed
 
     def check(self):
-        latest = bytearray()
         try:
-            fetch(f"https://api.github.com/repos/{self.repository}/releases/latest",
-                  "api.github.com", 2 * 1024 * 1024, lambda data, _: latest.extend(data))
+            release = self.metadata("/latest")
         except HTTPError as error:
             if error.code != 404:
                 raise
             return {"available": False, "no_release": True}
-        release = json.loads(latest)
+        return self.prepare(release)
+
+    def list_rollback(self):
+        found = {}
+        for page in range(1, 6):
+            releases = self.metadata(f"?per_page=30&page={page}")
+            if not isinstance(releases, list):
+                raise ValueError("Invalid GitHub release list")
+            for release in releases:
+                if release["draft"] is not False or release["prerelease"] is not False:
+                    continue
+                tag = release["tag_name"]
+                if not isinstance(tag, str) or not RELEASE_TAG.fullmatch(tag):
+                    continue
+                assets = release["assets"]
+                names = {asset["name"] for asset in assets}
+                if self.signed:
+                    label = tag[1:]
+                    required = {"release-manifest.json", SIGNATURE_NAME, f"SPgram-Update-v{label}.zip"}
+                    if not tag.startswith("v") or not required <= names:
+                        continue
+                else:
+                    matches = [asset for asset in assets if INSTALLER.fullmatch(asset["name"])]
+                    if len(matches) != 1:
+                        continue
+                    name = matches[0]["name"]
+                    if not matches[0].get("digest") and name + ".sha256" not in names:
+                        continue
+                    label = INSTALLER.fullmatch(name)[1]
+                if VERSION.fullmatch(label) and self.accepts(label):
+                    found.setdefault(label, tag)
+            if len(found) >= 3 or len(releases) < 30:
+                break
+        choices = dict(sorted(found.items(), key=lambda item: version(item[0]), reverse=True)[:3])
+        self.options.write_text(json.dumps(choices), encoding="ascii")
+        return {"versions": list(choices)}
+
+    def download_rollback(self, label):
+        tag = read_json(self.options).get(label)
+        if not self.accepts(label) or not isinstance(tag, str) or not RELEASE_TAG.fullmatch(tag):
+            raise ValueError("Version is outside the available rollback choices")
+        release = self.metadata("/tags/" + tag)
+        if release["tag_name"] != tag:
+            raise ValueError("Rollback release tag changed")
+        status = self.prepare(release)
+        if status.get("latest") != label or not status.get("available"):
+            raise ValueError("Selected rollback release changed")
+        return self.download()
+
+    def prepare(self, release):
         if release["draft"] is not False or release["prerelease"] is not False:
             raise ValueError("Unexpected release")
+        if not self.signed:
+            return self.check_installer(release)
         tag = release["tag_name"]
         if not tag.startswith("v") or not VERSION.fullmatch(tag[1:]):
             return {"available": False, "no_release": True}
@@ -230,11 +307,11 @@ class Releases:
                 raise ValueError("Expected release asset missing")
             return matches[0]
 
-        if version(label) <= version(self.installed):
+        if not self.accepts(label):
             return {"latest": label, "available": False, "installed_ahead": version(label) < version(self.installed)}
         if not any(asset["name"] in {"release-manifest.json", SIGNATURE_NAME} for asset in assets):
             find_asset(f"SPgram-PortMaster-v{label}.zip")
-            return {"latest": label, "manual_update": True}
+            return {"latest": label, "available": False, "signed_required": True}
         find_asset("release-manifest.json")
         find_asset(SIGNATURE_NAME)
         payload = bytearray()
@@ -254,11 +331,65 @@ class Releases:
         return {"latest": label, "available": True,
                 "notes": notes[:350] if isinstance(notes, str) else ""}
 
+    def check_installer(self, release):
+        tag = release["tag_name"]
+        if not isinstance(tag, str) or not RELEASE_TAG.fullmatch(tag):
+            raise ValueError("Invalid release tag")
+        assets = release["assets"]
+        matches = [item for item in assets if INSTALLER.fullmatch(item["name"])]
+        if not matches:
+            return {"available": False, "no_release": True}
+        if len(matches) != 1:
+            raise ValueError("Ambiguous PortMaster installer")
+        chosen = matches[0]
+        name = chosen["name"]
+        label = INSTALLER.fullmatch(name)[1]
+        latest, installed = version(label), version(self.installed)
+        if not self.accepts(label):
+            return {"latest": label, "available": False, "installed_ahead": latest < installed}
+
+        url = self.tag_address(tag, name)
+        if chosen["browser_download_url"] != url or chosen["state"] != "uploaded":
+            raise ValueError("Untrusted installer address")
+        digest = chosen.get("digest")
+        if digest is not None and not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+            raise ValueError("Invalid GitHub asset digest")
+        checksum_name = name + ".sha256"
+        checksums = [item for item in assets if item["name"] == checksum_name]
+        if checksums:
+            checksum_url = self.tag_address(tag, checksum_name)
+            if (len(checksums) != 1 or checksums[0]["browser_download_url"] != checksum_url
+                    or checksums[0]["state"] != "uploaded"):
+                raise ValueError("Untrusted installer checksum address")
+            raw = bytearray()
+            fetch(checksum_url, "github.com", 1024, lambda data, _: raw.extend(data))
+            checksum = re.fullmatch(rb"([a-fA-F0-9]{64}) [ *]" + re.escape(name.encode("ascii")) + rb"\r?\n?", raw)
+            if not checksum or (digest and checksum[1].decode("ascii").lower() != digest[7:]):
+                raise ValueError("Installer checksums disagree or are invalid")
+            digest = "sha256:" + checksum[1].decode("ascii").lower()
+        if not digest:
+            raise ValueError("No SHA-256 for this installer")
+        asset = {"version": label, "tag": tag, "name": name, "url": url, "size": chosen["size"], "sha256": digest[7:]}
+        self.validate_github_asset(asset)
+        self.archive.unlink(missing_ok=True)
+        self.github_asset.write_text(json.dumps(asset), encoding="ascii")
+        notes = release.get("body")
+        return {"latest": label, "available": True, "notes": notes[:350] if isinstance(notes, str) else ""}
+
+    def validate_github_asset(self, asset):
+        label, tag, name = asset["version"], asset["tag"], asset["name"]
+        if (not self.accepts(label) or not RELEASE_TAG.fullmatch(tag)
+                or name != f"SPgram-PortMaster-v{label}.zip" or asset["url"] != self.tag_address(tag, name)
+                or type(asset["size"]) is not int or not 0 < asset["size"] <= LIMIT
+                or not re.fullmatch(r"[a-f0-9]{64}", asset["sha256"])):
+            raise ValueError("Invalid GitHub installer metadata")
+        return asset
+
     def validate(self, manifest):
         label, item = manifest_asset(manifest)
         if (manifest["repository"].lower() != self.repository.lower()
                 or item["url"] != self.address(label, item["name"])
-                or version(label) <= version(self.installed)):
+                or not self.accepts(label)):
             raise ValueError("Update is outside the selected release")
         return label, item
 
@@ -267,8 +398,23 @@ class Releases:
         self.validate(manifest)
         return manifest
 
+    def verified_asset(self):
+        if self.signed:
+            label, item = manifest_asset(self.load_verified_manifest())
+            return label, item, ""
+        item = self.validate_github_asset(read_json(self.github_asset))
+        return item["version"], item, APP_PREFIX
+
+    def install_verified(self):
+        label, item, prefix = self.verified_asset()
+        self.store.install_asset(self.archive, label, item, prefix, rollback=self.rollback)
+        try:
+            self.archive.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def download(self):
-        item = self.load_verified_manifest()["update_asset"]
+        label, item, prefix = self.verified_asset()
         if shutil.disk_usage(self.directory).free < item["size"] + EXPANDED_LIMIT:
             raise ValueError("Insufficient free space for update")
         part = self.directory / "download.part"
@@ -290,6 +436,10 @@ class Releases:
                 os.fsync(output.fileno())
             if count != item["size"] or digest.hexdigest() != item["sha256"]:
                 raise ValueError("Update download failed verification")
+            with ZipFile(part) as package:
+                self.store.package_entries(package, label, prefix)
+            if self.cancel.exists():
+                raise ValueError("Download cancelled")
             os.replace(part, self.archive)
             sync_dir(self.directory)
             return {"verified": True}
@@ -311,7 +461,13 @@ class Store:
 
     def update_authentication_available(self):
         path = self.port / UPDATE_KEY
-        return path.is_file() and not path.is_symlink() and shutil.which("openssl") is not None
+        if not path.is_file() or path.is_symlink() or shutil.which("openssl") is None:
+            return False
+        try:
+            read_update_key(path)
+        except (OSError, ValueError):
+            return False
+        return True
 
     @contextmanager
     def lock(self):
@@ -368,11 +524,18 @@ class Store:
 
     def install(self, archive, manifest):
         label, asset = manifest_asset(manifest)
+        self.install_asset(archive, label, asset, "")
+
+    def install_asset(self, archive, label, asset, prefix, rollback=False):
         current = self.read()
         if current["trial"]:
             raise ValueError("Resolve the pending startup trial first")
-        if version(label) <= max(version(self.installed(current["active"])),
-                                 version(self.installed("base"))):
+        active = version(self.installed(current["active"]))
+        base = self.installed("base")
+        if rollback and version(label) >= active:
+            raise ValueError("Rollback must be older than the installed version")
+        if not rollback and (version(label) <= active or
+                             (base != current.get("base_version") and version(label) <= version(base))):
             raise ValueError("Update must be newer than the installed version")
         slot = self.slots / ("v" + label)
         existing = slot.exists()
@@ -393,48 +556,61 @@ class Store:
             else:
                 handle.seek(0)
                 with ZipFile(handle) as package:
-                    stage = self.extract(package, label, asset["sha256"])
+                    stage = self.extract(package, label, asset["sha256"], prefix)
         if not existing:
             os.rename(stage, slot)
             sync_dir(self.slots)
-        self.save({"active": label, "previous": current["active"], "trial": True, "started": False})
+        self.save({"active": label, "previous": current["active"], "trial": True, "started": False,
+                   "base_version": base})
 
-    def extract(self, package, label, digest):
+    def package_entries(self, package, label, prefix):
         entries = package.infolist()
         if len(entries) > 500:
             raise ValueError("Too many archive entries")
         total = 0
         names = set()
+        payload = {}
         for entry in entries:
-            name = entry.orig_filename
+            if prefix and (not entry.filename.startswith(prefix) or entry.is_dir()):
+                continue
+            name = entry.orig_filename[len(prefix):]
             mode = stat.S_IFMT(entry.external_attr >> 16)
-            if (name != entry.filename or not allowed_path(name) or name.lower() in names
+            if (entry.orig_filename != entry.filename or not allowed_path(name) or name.lower() in names
                     or entry.is_dir() or mode not in {0, stat.S_IFREG}
                     or entry.compress_type not in {ZIP_DEFLATED, ZIP_STORED}
                     or entry.flag_bits & 1 or entry.file_size > LIMIT):
                 raise ValueError("Unsafe archive entry")
             names.add(name.lower())
+            payload[name] = entry
             total += entry.file_size
-        if not REQUIRED <= set(package.namelist()) or total > EXPANDED_LIMIT:
+        if not REQUIRED <= payload.keys() or total > EXPANDED_LIMIT:
             raise ValueError("Incomplete or oversized application")
-        if (package.getinfo("VERSION").file_size > 80
-                or package.read("VERSION").decode("ascii").strip() != label):
+        if (payload["VERSION"].file_size > 80
+                or package.read(payload["VERSION"]).decode("ascii").strip() != label):
             raise ValueError("Archive version mismatch")
+        if prefix:
+            preview = payload.get("SIGN_IN_PREVIEW")
+            if not preview or preview.file_size > 8 or package.read(preview).strip() != b"0":
+                raise ValueError("Expected a full PortMaster release")
+        with package.open(payload["lib/libtdjson.so"]) as handle:
+            elf = handle.read(20)
+        if elf[:6] != b"\x7fELF\x02\x01" or elf[18:20] != b"\xb7\x00":
+            raise ValueError("Invalid TDLib architecture")
+        return payload, total
+
+    def extract(self, package, label, digest, prefix):
+        payload, total = self.package_entries(package, label, prefix)
         if shutil.disk_usage(self.slots).free < total + 8 * 1024 * 1024:
             raise ValueError("Insufficient free space")
         stage = Path(mkdtemp(prefix=".stage-", dir=self.slots))
         try:
-            for entry in entries:
-                output = stage / entry.filename
+            for name, entry in payload.items():
+                output = stage / name
                 output.parent.mkdir(parents=True, exist_ok=True)
                 with package.open(entry) as source, output.open("xb") as destination:
                     shutil.copyfileobj(source, destination, 1024 * 1024)
                     destination.flush()
                     os.fsync(destination.fileno())
-            with (stage / "lib/libtdjson.so").open("rb") as handle:
-                elf = handle.read(20)
-            if elf[:6] != b"\x7fELF\x02\x01" or elf[18:20] != b"\xb7\x00":
-                raise ValueError("Invalid TDLib architecture")
             with (stage / ".verified").open("x", encoding="ascii") as receipt:
                 receipt.write(digest)
                 receipt.flush()
@@ -450,15 +626,40 @@ class Store:
         if selection["previous"] is None:
             raise ValueError("No previous version available")
         self.save({"active": selection["previous"], "previous": selection["active"],
-                   "trial": False, "started": False})
+                   "trial": False, "started": False, "base_version": selection.get("base_version")})
 
     def run(self, command):
+        restarted = False
+        update_result = None
+        while True:
+            result, selected = self.launch(command, update_result)
+            update_result = None
+            if restarted and self.read()["active"] != selected:
+                restarted = False
+                update_result = "rolled-back"
+                continue
+            if result in {INSTALL_EXIT, GITHUB_ROLLBACK_EXIT}:
+                try:
+                    Releases(self, self.installed(selected), rollback=result == GITHUB_ROLLBACK_EXIT).install_verified()
+                except (OSError, ValueError, KeyError, TypeError, RuntimeError, BadZipFile):
+                    update_result = "install-failed"
+                else:
+                    restarted = True
+                continue
+            if result == ROLLBACK_EXIT:
+                self.rollback(self.read())
+                return 0
+            return result
+
+    def launch(self, command, update_result):
         selection = self.read()
         if selection["trial"] and selection["started"]:
             self.finish_trial(selection)
             selection = self.read()
         selected = selection["active"]
-        if version(self.installed("base")) > version(self.installed(selected)):
+        base = self.installed("base")
+        if (selected != "base" and base != selection.get("base_version")
+                and version(base) >= version(self.installed(selected))):
             selected = "base"
             selection = {"active": "base", "previous": None, "trial": False, "started": False}
             self.save(selection)
@@ -467,7 +668,10 @@ class Store:
         environment["TELEGRAM_SP_UPDATE_PORT"] = str(self.port)
         environment["TELEGRAM_SP_UPDATE_PYTHON"] = sys.executable
         environment["TELEGRAM_SP_CAN_ROLLBACK"] = "1" if selection["previous"] else "0"
-        environment["TELEGRAM_SP_SIGNED_UPDATES"] = "1" if self.update_authentication_available() else "0"
+        if update_result:
+            environment["TELEGRAM_SP_UPDATE_RESULT"] = update_result
+        else:
+            environment.pop("TELEGRAM_SP_UPDATE_RESULT", None)
         trial = selected != "base" and selection["trial"]
         if trial:
             self.health.unlink(missing_ok=True)
@@ -480,14 +684,7 @@ class Store:
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
         if trial:
             self.finish_trial(selection)
-        if result == INSTALL_EXIT:
-            releases = Releases(self, self.installed(selected))
-            self.install(releases.archive, releases.load_verified_manifest())
-            return 0
-        if result == ROLLBACK_EXIT:
-            self.rollback(self.read())
-            return 0
-        return result
+        return result, selected
 
     def finish_trial(self, selection):
         if self.health.is_file():
@@ -495,7 +692,7 @@ class Store:
             self.save(selection)
         else:
             self.save({"active": selection["previous"], "previous": None,
-                       "trial": False, "started": False})
+                       "trial": False, "started": False, "base_version": selection.get("base_version")})
 
 
 def main():
@@ -507,18 +704,25 @@ def main():
     install.add_argument("manifest", type=Path)
     install.add_argument("signature", type=Path)
     commands.add_parser("rollback")
-    for name in ("check", "download"):
+    for name in ("check", "download", "rollback-list", "rollback-download"):
         operation = commands.add_parser(name)
         operation.add_argument("installed")
+        if name == "rollback-download":
+            operation.add_argument("version")
     run = commands.add_parser("run")
     run.add_argument("launch", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
         store = Store(args.port)
-        if args.operation in {"check", "download"}:
+        if args.operation in {"check", "download", "rollback-list", "rollback-download"}:
             version(args.installed)
-            releases = Releases(store, args.installed)
-            result = releases.check() if args.operation == "check" else releases.download()
+            releases = Releases(store, args.installed, rollback=args.operation.startswith("rollback-"))
+            if args.operation == "rollback-download":
+                result = releases.download_rollback(args.version)
+            else:
+                handler = {"check": releases.check, "download": releases.download,
+                           "rollback-list": releases.list_rollback}[args.operation]
+                result = handler()
             print(json.dumps(result))
             return 0
         with store.lock():

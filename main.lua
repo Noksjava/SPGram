@@ -474,7 +474,9 @@ function love.load()
     current = screens.auth
     current:enter()
     startup_intro = intro_screen.new(fonts.subtitle, media_settings.get("startup_intro"))
-    if releases and media_settings.get("check_updates_on_launch") then releases:start("check", true) end
+    if releases and not releases.update_error and media_settings.get("check_updates_on_launch") then
+        releases:start("check", true)
+    end
 end
 
 local function settings_slide_progress()
