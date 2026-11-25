@@ -343,13 +343,16 @@ local function convert_video(job)
         result.error = "Video playback requires FFmpeg on this device."
         return result
     end
-    local filter = "fps=15,scale='min(320,iw)':'min(240,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
+    local scale = "scale='min(320,iw)':'min(240,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
+    local filter = job.animation and scale or "fps=15," .. scale
+    local audio = job.animation and " -an -fps_mode cfr -g 30"
+        or " -map '0:a:0?' -g 15 -c:a libvorbis -b:a 40k -ac 1 -ar 24000"
     local command = clean_env .. sh_quote(ffmpeg)
         .. " -nostdin -y -v error -nostats -stats_period 1 -progress " .. sh_quote(job.output .. ".progress")
         .. " -max_alloc 134217728 -threads 1" .. local_input .. " -i " .. sh_quote(job.path)
-        .. " -map 0:V:0 -map '0:a:0?' -map_metadata -1 -map_chapters -1 -filter_threads 1 -threads 1"
+        .. " -map 0:V:0 -map_metadata -1 -map_chapters -1 -filter_threads 1 -threads 1"
         .. " -vf " .. sh_quote(filter)
-        .. " -c:v libtheora -b:v 240k -g 15 -pix_fmt yuv420p -c:a libvorbis -b:a 40k -ac 1 -ar 24000 "
+        .. " -c:v libtheora -b:v 240k -pix_fmt yuv420p" .. audio .. " "
         .. sh_quote(job.output)
     result.ok = run_cancelable(command, job.output) and (file_size(job.output) or 0) > 0
     if not result.ok then

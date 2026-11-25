@@ -211,12 +211,12 @@ function telegram:send(request, extra)
     return request["@extra"]
 end
 
-function telegram:open_private_chat(user_id)
+function telegram:open_private_chat(user_id, token)
     self:send({
         ["@type"] = "createPrivateChat",
         user_id = user_id,
         force = true,
-    }, "open_private_chat:" .. tostring(user_id))
+    }, token or "open_private_chat:" .. tostring(user_id))
 end
 
 function telegram:shutdown()
@@ -227,6 +227,7 @@ function telegram:shutdown()
     self:stop_wifi_power()
     self:release_audio()
     self:release_video()
+    self:close_profile_photo()
     if self.anim_in then
         self.anim_in:clear()
         self.anim_in:push({type = "quit"})
@@ -499,6 +500,7 @@ function telegram:update(dt)
     self:poll_video_seek(now)
     self:collect_video_source(now)
     self:poll_media_decoder()
+    self:poll_fullscreen_animation()
     self:poll()
     if self.ready and not self.foreground_media then self:request_custom_emojis() end
 
@@ -520,6 +522,10 @@ function telegram:update(dt)
     self:poll_network(now, os.time())
     self:poll_wifi_power()
     self:check_history_timeout(now)
+    local receipts = self.message_receipt_lookup
+    if receipts and receipts.deadline and now >= receipts.deadline then
+        receipts.status, receipts.deadline, receipts.token = "Could not load read receipts. Try again.", nil, nil
+    end
     self:poll_video_progress(now)
     if self.ready and not self.foreground_media and not (self.options and self.options.sign_in_only)
         and now >= (self.next_photo_cleanup or 0) then
@@ -586,6 +592,25 @@ function telegram:handle(object)
     end
 
     local extra = tostring(object["@extra"] or "")
+    if self:handle_message_receipts(kind, extra, object) then return end
+    if self:handle_profile_user(kind, extra, object) then return end
+    if extra:match("^profile_message:") then
+        local request = self.profile_message_open
+        if request and request.token == extra then
+            if kind == "chat" and object.id then
+                self:handle_new_chat(object)
+                request.chat_id = object.id
+            else
+                request.error = "Could not open this conversation."
+            end
+        end
+        return
+    end
+    if kind == "error" and extra:match("^profile_photo:") then
+        self.active_downloads = math.max(0, (self.active_downloads or 0) - 1)
+        if self.profile_photo and self.profile_photo.token == extra then self.profile_photo.status = "error" end
+        return
+    end
     if extra:sub(1, 13) == "sponsor_link:"
         and self:handle_sponsor_link(kind, extra, object, love.timer.getTime()) then return end
     if self:handle_gif_picker_response(kind, extra, object) or self:handle_comments_response(kind, extra, object)
@@ -668,6 +693,18 @@ function telegram:handle(object)
             chat.unread_count = object.unread_count or 0
             chat.last_read_inbox_message_id = object.last_read_inbox_message_id
         end
+    elseif kind == "updateChatBlockList" then
+        local chat = self.chats_by_id[object.chat_id] or self.archive_chats_by_id[object.chat_id]
+        if chat then
+            chat.block_list = object.block_list
+            local profile = self.profile_user
+            if profile and profile.id == self:private_chat_user_id(chat) then
+                profile.blocked = object.block_list and object.block_list["@type"] == "blockListMain" or false
+            end
+        end
+    elseif kind == "updateChatReadOutbox" then
+        local chat = self.chats_by_id[object.chat_id] or self.archive_chats_by_id[object.chat_id]
+        if chat then chat.last_read_outbox_message_id = object.last_read_outbox_message_id end
     elseif kind == "updateNewMessage" then
         self:receive_thread_message(object.message)
         self:handle_new_message(object.message)
@@ -774,12 +811,22 @@ function telegram:handle(object)
         else
             self:handle_history(object)
         end
+    elseif kind == "supergroup" and extra:match("^profile_handle:") then
+        local chat_id = tonumber(extra:match("^profile_handle:(%-?%d+)$"))
+        if chat_id then
+            local details = self.profile_details[chat_id] or {}
+            details.username = (object.usernames and (object.usernames.active_usernames or {})[1]) or ""
+            self.profile_details[chat_id] = details
+        end
     elseif (kind == "supergroupFullInfo" or kind == "basicGroupFullInfo") and extra:match("^profile_details:") then
         local chat_id = tonumber(extra:match("^profile_details:(%-?%d+)$"))
         if chat_id then
             self.profile_details = self.profile_details or {}
-            self.profile_details[chat_id] = {description = object.description,
-                member_count = object.member_count or (object.members and #object.members)}
+            local details = self.profile_details[chat_id] or {}
+            details.description = object.description
+            details.member_count = object.member_count or (object.members and #object.members)
+            details.photo = object.photo
+            self.profile_details[chat_id] = details
         end
     elseif kind == "chats" then
         local extra = tostring(object["@extra"] or "")
@@ -1054,6 +1101,13 @@ function telegram:handle_file(file)
     if not file_id then return end
     local active_audio = self.active_audio
     local extra = tostring(file["@extra"] or "")
+    local profile_photo = self.profile_photo
+    if extra:match("^profile_photo:") then
+        self.active_downloads = math.max(0, (self.active_downloads or 0) - 1)
+        if profile_photo and profile_photo.token == extra then self:handle_profile_photo(file) end
+        return
+    end
+    if profile_photo and profile_photo.id == file_id then self:handle_profile_photo(file) end
     if active_audio and active_audio.file_id == file_id
         and (not extra:match("^audio_download:") or extra == active_audio.download_token) then
         if file["@type"] == "file" then
@@ -1062,7 +1116,7 @@ function telegram:handle_file(file)
         return self:handle_audio_file(file, active_audio)
     end
     local active_video = self.active_video
-    if active_video and active_video.file_id == file_id then
+    if active_video and active_video.kind ~= "gif" and active_video.file_id == file_id then
         if file["@type"] == "file" then
             self.active_downloads = math.max(0, (self.active_downloads or 0) - 1)
         end

@@ -588,6 +588,17 @@ local function update_app(dt)
 
     if current.update then current:update(dt) end
 
+    if current == screens.profile then
+        local profile, ms = screens.profile, screens.messenger
+        local chat_id = profile.open_chat_id or (profile.pending_message and profile.pending_message.chat_id)
+        if chat_id then
+            profile.open_chat_id, profile.pending_message, profile_return = nil, nil, nil
+            tg.profile_message_open = nil
+            ms.wants_open_chat = chat_id
+            current = ms
+        end
+    end
+
     if current == screens.messenger then
         local ms = screens.messenger
         if ms.wants_face_setup then

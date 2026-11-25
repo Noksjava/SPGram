@@ -135,7 +135,7 @@ return function(screen)
         local kind = comment_media(self.tg, message)
         local text, entities = comment_body(self.tg, message, kind ~= nil)
         local animated = message.content and message.content.animated_emoji
-        thread.preview = {title = self.tg:sender_name(message), message_text = text, entities = entities,
+        thread.preview = {title = self.tg:sender_name(message), message_text = text, entities = entities, receipt_message = message,
             comment_thread = thread, scroll = 0, reply_message = message, reply = shown_reply(self.tg, thread, message),
             emoji_sticker = animated and animated.sticker, comment_media = kind and {message = message, kind = kind}}
     end
@@ -393,7 +393,7 @@ return function(screen)
                 draw_comment_avatar(self.tg, message, author, x + 21, top + 5, f, colors)
                 local tx = x + 53
                 ui.text(ui.fit(author, f.small, width - 145), tx, top + 8, f.small, colors.accent)
-                ui.text(row.time, x + width - 25 - f.tiny:getWidth(row.time), top + 8, f.tiny, colors.muted)
+                self:draw_message_timestamp(message, row.time, x + width - 25, top + 8)
                 local body_top = top + message_top
                 if row.quote then
                     local reply = row.quote

@@ -265,6 +265,7 @@ return function(telegram)
     end
 
     function telegram:close_inline_media()
+        if self.active_video and self.active_video.kind == "gif" then self:release_video() end
         self.manual_animation_entry = nil
         if not preferences.get("inline_animation") or preferences.get("small_texture_cache") then
             self:trim_animation_frames()

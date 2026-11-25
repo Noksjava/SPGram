@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.67
+
+- Update notices were simplified and the Updates screen was refreshed with clearer version and status colors.
+- Installer-only updates now open installation instructions from the Updates menu.
+
 ## 0.2.58 - 0.2.66
 
 - Read indicators were added to sent messages, and reader names and times were added where Telegram provides read receipts.

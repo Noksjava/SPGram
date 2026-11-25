@@ -44,6 +44,7 @@ jobs:
         run: bash build_portmaster.sh "$RELEASE_VERSION" --repository "$GITHUB_REPOSITORY"
       - name: Validate built archive
         run: |
+          (cd dist && sha256sum --check --strict -- SPgram-PortMaster-v*.zip.sha256 SPgram-Update-v*.zip.sha256)
           python3 tests/check_install_overlay.py dist/SPgram-PortMaster-v*.zip
           unzip -q dist/SPgram-PortMaster-v*.zip -d build
           find build -name '*.lua' -print0 | xargs -0 -I '{}' luajit -b '{}' /dev/null

@@ -20,6 +20,81 @@ local function prune_messages(chat_id, self_ref)
 end
 
 return function(telegram)
+    function telegram:message_delivery(message)
+        if not message or not message.is_outgoing or message.is_channel_post or message.scheduling_state then return end
+        local chat = self.chats_by_id[message.chat_id] or self.archive_chats_by_id[message.chat_id]
+        local kind = chat and chat.type
+        if not kind or kind.is_channel or (kind.user_id and self.me and kind.user_id == self.me.id) then return end
+        if message.sending_state then
+            return message.sending_state["@type"] == "messageSendingStateFailed" and "failed" or "pending"
+        end
+        local id = tonumber(message.id) or 0
+        if id <= 0 or chat.last_read_outbox_message_id == nil then return end
+        return id <= (tonumber(chat.last_read_outbox_message_id) or 0) and "read" or "sent"
+    end
+
+    function telegram:receipt_chat(message)
+        if not message or not message.is_outgoing or message.is_channel_post or message.sending_state
+            or message.scheduling_state or (tonumber(message.id) or 0) <= 0 then return end
+        local chat = self.chats_by_id[message.chat_id] or self.archive_chats_by_id[message.chat_id]
+        local kind = chat and chat.type
+        if not kind or kind.is_channel or (kind.user_id and self.me and kind.user_id == self.me.id) then return end
+        local name = kind["@type"]
+        if name == "chatTypePrivate" or name == "chatTypeBasicGroup" or name == "chatTypeSupergroup" then
+            return chat
+        end
+    end
+
+    function telegram:request_message_receipts(message)
+        local chat = self:receipt_chat(message)
+        if not chat then return end
+        local lookup = {message = message, user_id = chat.type.user_id, status = "Loading read receipts…",
+            deadline = love.timer.getTime() + 15}
+        self.message_receipt_generation = (self.message_receipt_generation or 0) + 1
+        lookup.request_id = "read_receipts:" .. tostring(self.message_receipt_generation)
+        self.message_receipt_lookup = lookup
+        lookup.token = self:send({["@type"] = "getMessageProperties", chat_id = message.chat_id,
+            message_id = message.id}, lookup.request_id .. ":properties")
+        if not lookup.token then lookup.status, lookup.deadline = "Read receipts are unavailable.", nil end
+        return lookup
+    end
+
+    function telegram:handle_message_receipts(kind, extra, response)
+        if not extra:match("^read_receipts:") then return false end
+        local lookup = self.message_receipt_lookup
+        if not lookup or extra ~= lookup.token then return true end
+        lookup.token, lookup.deadline = nil, nil
+        if kind == "messageProperties" then
+            local method = lookup.user_id and response.can_get_read_date and "getMessageReadDate"
+                or not lookup.user_id and response.can_get_viewers and "getMessageViewers"
+            if method then
+                lookup.token = self:send({["@type"] = method, chat_id = lookup.message.chat_id,
+                    message_id = lookup.message.id}, lookup.request_id .. ":details")
+                if lookup.token then
+                    lookup.deadline = love.timer.getTime() + 15
+                    return true
+                end
+            end
+            lookup.status = "Telegram does not provide read receipts for this message."
+        elseif kind == "messageViewers" then
+            lookup.viewers = response.viewers or {}
+            for _, viewer in ipairs(lookup.viewers) do self:ensure_user(viewer.user_id) end
+            lookup.status = "No readers reported yet."
+        elseif kind == "messageReadDateRead" then
+            lookup.viewers = {{user_id = lookup.user_id, view_date = response.read_date}}
+            self:ensure_user(lookup.user_id)
+        elseif kind == "messageReadDateUnread" then
+            lookup.status = "This message has not been read yet."
+        elseif kind == "messageReadDateTooOld" then
+            lookup.status = "The read time is no longer available."
+        elseif kind == "messageReadDateUserPrivacyRestricted" or kind == "messageReadDateMyPrivacyRestricted" then
+            lookup.status = "The read time is hidden by Telegram privacy settings."
+        else
+            lookup.status = "Could not load read receipts."
+        end
+        return true
+    end
+
     function telegram:message_text(message)
         local content = message and message.content
         if not content then
