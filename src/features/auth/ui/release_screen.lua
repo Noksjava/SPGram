@@ -29,6 +29,7 @@ function Release:start(operation, on_launch, target)
     self.transfer_dir = operation == "rollback-download" and self.directory .. "rollback/" or self.directory
     if operation == "check" then
         self.available, self.verified, self.notes = false, false, nil
+        self.notes_started = nil
     elseif self.downloading then
         os.remove(self.transfer_dir .. "cancel")
         os.remove(self.transfer_dir .. "progress")
@@ -156,6 +157,7 @@ function Release:keypressed(key)
             self.status, self.status_tone = self.update_status, self.update_status_tone
             return
         end
+        self.notes_started = nil
         return "back"
     end
     if self.thread and self.downloading then return end
@@ -185,6 +187,7 @@ function Release:keypressed(key)
         elseif self.available then self:start("download") end
     elseif self.selection == 4 and self.supported then
         self.rollback_open, self.selection, self.rollback_versions, self.rollback_ready = true, 1, {}, nil
+        self.notes_started = nil
         self.update_status, self.update_status_tone = self.status, self.status_tone
         self:start("rollback-list")
     end
@@ -244,6 +247,51 @@ function Release:draw_operation()
     end
 end
 
+function Release:draw_notes(x, y, width, height)
+    local font, colors = self.fonts.small, ui.colors
+    ui.text("Release notes", x, y, font, colors.text)
+    local line_height = font:getHeight()
+    local heading_height = line_height + 4
+    y, height = y + heading_height, height - heading_height
+    if height <= 0 then return end
+
+    local layout = self.notes_layout
+    if not layout or layout.text ~= self.notes or layout.font ~= font or layout.width ~= width then
+        local _, lines = font:getWrap(self.notes, width)
+        layout = {text = self.notes, font = font, width = width, lines = lines}
+        self.notes_layout, self.notes_started = layout, nil
+    end
+    if layout.height ~= height then
+        layout.height, self.notes_started = height, nil
+    end
+
+    local overflow = #layout.lines * line_height - height
+    local offset = 0
+    if overflow > 0 then
+        local now = love.timer.getTime()
+        self.notes_started = self.notes_started or now
+        local speed, pause = 12, 2
+        local travel = overflow / speed
+        local leg = travel + pause
+        local phase = (now - self.notes_started) % (2 * leg)
+        if phase < leg then
+            offset = math.max(0, phase - pause) * speed
+        else
+            offset = overflow - math.max(0, phase - leg - pause) * speed
+        end
+        offset = math.floor(offset + 0.5)
+    end
+
+    love.graphics.push("all")
+    love.graphics.intersectScissor(x, y, width, height)
+    local first = math.floor(offset / line_height) + 1
+    local last = math.min(#layout.lines, math.ceil((offset + height) / line_height))
+    for index = first, last do
+        ui.text(layout.lines[index], x, y + (index - 1) * line_height - offset, font, colors.muted)
+    end
+    love.graphics.pop()
+end
+
 function Release:draw()
     self:poll()
     local fonts, colors = self.fonts, ui.colors
@@ -270,6 +318,8 @@ function Release:draw()
     local _, status_lines = fonts.small:getWrap(self.status or "", w - 104)
     local status_h = math.max(1, #status_lines) * fonts.small:getHeight() + 12
     local footer_h = 36 + (self.status and status_h + 10 or 0)
+    local has_notes = not self.rollback_open and self.notes and self.notes ~= ""
+    if has_notes then footer_h = footer_h + fonts.small:getHeight() * 3 + 8 end
     local visible = math.min(#items, math.max(1, math.floor((h - top - footer_h) / step)))
     local first = math.max(1, self.selection - visible + 1)
     for index = first, first + visible - 1 do
@@ -292,12 +342,8 @@ function Release:draw()
         ui.printf(self.status, 52, below + 6, w - 104, "left", fonts.small, colors.text)
         below = below + status_h + 6
     end
-    if not self.rollback_open and self.notes and self.notes ~= "" and below + fonts.small:getHeight() < h - 36 then
-        ui.text("Release notes", 40, below, fonts.small, colors.text)
-        below = below + fonts.small:getHeight() + 4
-        love.graphics.setScissor(40, below, w - 80, math.max(0, h - 36 - below))
-        ui.printf(self.notes, 40, below, w - 80, "left", fonts.small, colors.muted)
-        love.graphics.setScissor()
+    if has_notes and below + fonts.small:getHeight() + 4 < h - 36 then
+        self:draw_notes(40, below, w - 80, h - 36 - below)
     end
     ui.button_hint("{confirm} — Select   {back} — Back / Cancel download", 24, h - 29, fonts.tiny, colors.muted)
 end

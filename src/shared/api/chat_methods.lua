@@ -18,9 +18,10 @@ local FORUM_NEXT_PAGE = 20
 local FORUM_RETRY_PAGE = 8
 
 local function copy_forum_row(topic)
-    local message_id = topic.last_message and topic.last_message.id
+    local message = topic.last_message
     return {info = topic.info, is_pinned = topic.is_pinned, unread_count = topic.unread_count,
-        last_read_inbox_message_id = topic.last_read_inbox_message_id, last_message = message_id and {id = message_id}}
+        last_read_inbox_message_id = topic.last_read_inbox_message_id,
+        last_message = message and {id = message.id, preview = message.preview}}
 end
 
 local function chat_position(chat, list)
@@ -401,8 +402,9 @@ return function(telegram)
                     row.last_read_inbox_message_id, row.unread_count = topic.last_read_inbox_message_id, topic.unread_count
                 end
                 local last_id = topic.last_message and topic.last_message.id
-                if active and last_id and (not row.last_message or last_id >= row.last_message.id) then
-                    row.last_message = {id = last_id}
+                if last_id and (not row.last_message or last_id > row.last_message.id
+                    or (last_id == row.last_message.id and topic.last_message.content)) then
+                    self:set_forum_last_message(row, topic.last_message)
                 end
                 forum.by_id[id] = row
                 forum.topics[#forum.topics + 1] = row

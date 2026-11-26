@@ -6,6 +6,7 @@ love = {
     filesystem = {
         remove = function(name) removed[#removed + 1] = name end,
         write = function(name) removed.cancelled = name end,
+        getInfo = function(path) if path == "res/telegram.png" then return {type = "file"} end end,
     },
     graphics = {getWidth = function() return 640 end, getHeight = function() return 480 end},
 }
@@ -391,7 +392,15 @@ for i, expected in ipairs(sections) do
         menu:keypressed("return")
         assert(menu.section.label == "Animated" and menu:items()[1].id == "retroscroll")
         menu:keypressed("return")
+        assert(menu.section.label == "Retroscroll" and menu:items()[2].label == "wavelenght-tg")
+        menu:keypressed("down")
+        menu:keypressed("return")
         assert(media.chat_background() == "retroscroll")
+        menu:keypressed("up")
+        menu:keypressed("return")
+        assert(media.chat_background() == "off")
+        menu:keypressed("escape")
+        assert(menu.section.label == "Animated")
         menu:keypressed("escape")
         assert(menu.section.label == "Backgrounds" and menu.selected_item == 3)
         menu:activate_item(menu:items()[1])

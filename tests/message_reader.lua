@@ -598,6 +598,58 @@ do
     assert(menu.section.icon)
     menu:draw()
     assert(drawn.Animated and drawn.Retroscroll)
+    local filesystem = love.filesystem
+    local read, write, items, info = filesystem.read, filesystem.write, filesystem.getDirectoryItems, filesystem.getInfo
+    local config = "chat_background=retroscroll\n"
+    filesystem.read = function(path) if path == "media_settings.conf" then return config end end
+    filesystem.write = function(path, value) assert(path == "media_settings.conf"); config = value; return true end
+    local theme_names = {"Night Sky.v2.PNG", "metadata.txt", "old.jpg", "Directory.png"}
+    filesystem.getDirectoryItems = function(path)
+        assert(path == "effects/retroscroll/themes")
+        return theme_names
+    end
+    filesystem.getInfo = function(path)
+        return (path == "effects/retroscroll/themes/Night Sky.v2.PNG" or path == "effects/retroscroll/themes/Extra.png"
+            or path == "res/telegram.png") and {type = "file"} or nil
+    end
+    local media = require("src.shared.system.media_settings")
+    media.load()
+    open_item("retroscroll")
+    menu:draw()
+    assert(drawn["Night Sky.v2"] and drawn["wavelenght-tg"] and not drawn["Night Sky.v2.PNG"] and not drawn["metadata"])
+    assert(#menu:items() == 5 and menu:items()[1].id == "background_off" and drawn["Color effect"] and drawn["Motion effect"])
+    menu:keypressed("down")
+    menu:keypressed("return")
+    assert(media.retroscroll_tile() == "Night Sky.v2.PNG")
+    assert(config:find("retroscroll_tile=Night Sky.v2.PNG", 1, true))
+    menu:keypressed("down")
+    menu:keypressed("down")
+    menu:keypressed("return")
+    assert(media.retroscroll_effect("color") == "gradient" and config:find("retroscroll_gradient=1", 1, true))
+    menu:keypressed("right")
+    assert(media.retroscroll_effect("color") == "two_tone")
+    menu:keypressed("down")
+    menu:keypressed("left")
+    assert(media.retroscroll_effect("motion") == "orbit" and config:find("retroscroll_motion=orbit", 1, true))
+    menu:keypressed("up")
+    menu:keypressed("up")
+    menu:keypressed("up")
+    menu:keypressed("up")
+    menu:keypressed("return")
+    assert(media.chat_background() == "off" and config:find("chat_background=off", 1, true))
+    menu:enter()
+    assert(media.chat_background() == "off" and media.retroscroll_tile() == "Night Sky.v2.PNG"
+        and media.retroscroll_effect("color") == "two_tone" and media.retroscroll_effect("motion") == "orbit")
+    config = "chat_background=off\nretroscroll_gradient=1\n"
+    media.load()
+    assert(media.retroscroll_effect("color") == "gradient" and media.retroscroll_effect("motion") == "diagonal")
+    theme_names[#theme_names + 1] = "Extra.png"
+    open_item("visual")
+    open_item("backgrounds")
+    open_item("background_animated")
+    open_item("retroscroll")
+    assert(menu:items()[2].label == "Extra")
+    filesystem.read, filesystem.write, filesystem.getDirectoryItems, filesystem.getInfo = read, write, items, info
 end
 
 do
@@ -637,6 +689,44 @@ do
     assert(drawn["Starting SPgram…"])
     release:advance(11)
     assert(not release:operation_active())
+
+    local graphics = love.graphics
+    local print_text, scissor, screen_height = graphics.print, graphics.intersectScissor, graphics.getHeight
+    local wrap = font.getWrap
+    local notes = {"First note", "Second note", "Third note", "Fourth note", "Last note"}
+    function font:getWrap(text, width)
+        if text == "Long notes" then return width, notes end
+        return wrap(self, text, width)
+    end
+    graphics.getHeight = function() return 360 end
+    local positions, clip_y, clip_h = {}
+    graphics.print = function(text, x, y) positions[text] = y end
+    graphics.intersectScissor = function(_, y, _, height) clip_y, clip_h = y, height end
+    release.rollback_open, release.supported, release.selection = false, true, 1
+    release.status, release.notes = "New release available", "Long notes"
+    release:draw()
+    assert(positions["First note"] == clip_y and not positions["Last note"])
+    assert(clip_y + clip_h == 360 - 36)
+    local travel = (#notes * font:getHeight() - clip_h) / 12
+    positions, now = {}, 10 + 2 + travel + 1
+    release:draw()
+    assert(positions["Last note"] + font:getHeight() == clip_y + clip_h)
+    assert(release.selection == 1)
+    positions, now = {}, 10 + 4 + 1.5 * travel
+    release:draw()
+    assert(positions["Second note"] and not positions["First note"])
+    assert(release:keypressed("escape") == "back")
+    positions = {}
+    release:draw()
+    assert(positions["First note"] == clip_y)
+    release.notes = "Short note"
+    positions = {}
+    release:draw()
+    now = now + 10
+    release:draw()
+    assert(positions["Short note"] == clip_y and not release.notes_started)
+    font.getWrap = wrap
+    graphics.print, graphics.intersectScissor, graphics.getHeight = print_text, scissor, screen_height
     love.timer.getTime, love.event = clock, previous_event
 end
 
@@ -1441,9 +1531,27 @@ do
             {offset = site_start - 1, length = 4, type = {["@type"] = "textEntityTypeTextUrl", url = "https://example.org"}},
         }}}}
     assert(screen:read_message(message))
+    local graphics = love.graphics
+    local draw_image, print_text, user_photo = graphics.draw, graphics.print, tg.user_photo_image
+    local photo = {getWidth = function() return 60 end, getHeight = function() return 60 end}
+    local portrait_y, positions = nil, {}
+    tg.user_photo_image = function(_, id, chat_id)
+        assert(id == 81 and chat_id == 42)
+        return photo
+    end
+    graphics.draw = function(image, x, y)
+        if image == photo then portrait_y = y end
+    end
+    graphics.print = function(value, x, y)
+        positions[value] = y
+        print_text(value)
+    end
     screen:draw_text_preview(640, 480)
     local reader = screen.text_preview
-    assert(drawn["Message from Fixture Author"] and #reader.reader_links == 3)
+    assert(portrait_y and positions["Message from"] < positions["Fixture Author"])
+    assert(positions["Fixture Author"] < positions[text] and portrait_y + 36 < positions[text])
+    assert(#reader.reader_links == 3)
+    graphics.draw, graphics.print, tg.user_photo_image = draw_image, print_text, user_photo
     screen:keypressed("y")
     assert(reader.link_index == 1)
     screen:keypressed("return")
@@ -1464,6 +1572,16 @@ do
     assert(not reader.link_index)
     screen:keypressed("escape")
     assert(not screen.text_preview)
+
+    local chat_photo, requested = tg.chat_photo_image
+    tg.chat_photo_image = function(_, id) requested = id end
+    local post = {id = 1000, chat_id = chat.id, is_channel_post = true,
+        sender_id = {["@type"] = "messageSenderChat", chat_id = chat.id}, content = message.content}
+    assert(screen:read_message(post))
+    screen:draw_text_preview(640, 480)
+    assert(requested == chat.id and drawn["Post by"] and drawn[chat.title])
+    tg.chat_photo_image = chat_photo
+    screen:keypressed("escape")
 
     local menu = require("src.features.auth.ui.settings_screen").new({}, tg, {
         accounts = function() return {{key = "account_1", title = "Fixture Author"}}, "account_1" end,

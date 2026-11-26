@@ -4,7 +4,7 @@ SPgram is an unofficial Telegram client for the G35XX series with PortMaster. It
 
 SPgram is based on [TGmuOS-LOVE](https://github.com/archeryfox/TGmuOS-LOVE) by archeryfox.
 
-**Release · v0.2.71**
+**Release · v0.2.72**
 
 - Browse direct messages, groups, channels, Saved Messages, and Archived Chats. Search conversations and return to your reading position.
 - Open long posts in a scrollable reader. See text and attached media together, inspect photos and GIFs, and follow supported quotes back to their original messages.
@@ -16,7 +16,7 @@ SPgram is based on [TGmuOS-LOVE](https://github.com/archeryfox/TGmuOS-LOVE) by a
 
 You need an RG35XX device with PortMaster installed on your active storage, and Wi-Fi for Telegram sign-in and use. This release targets that device and firmware combination. Compatibility was tested on an RG35XXSP running Knulli Gladiator II, for now other PortMaster devices and firmware is unverified.
 
-1. Download **`SPgram-PortMaster-v0.2.71.zip`** and its matching **`.zip.sha256`** file from the release assets. Keep the installer zipped. [SPgram releases](https://github.com/Noksjava/SPGram/releases)
+1. Download **`SPgram-PortMaster-v0.2.72.zip`** and its matching **`.zip.sha256`** file from the release assets. Keep the installer zipped. [SPgram releases](https://github.com/Noksjava/SPGram/releases)
 2. Verify the download on your computer using one of the commands below.
 3. Copy the ZIP to **`/userdata/roms/ports/autoinstall/`**. On a readable storage card, open the **SHARE** partition and use `roms/ports/autoinstall/`. On Windows, you can also open **`\\[devicename]\share`** in File Explorer while the handheld is on the same network. Use your device's hostname if you changed it. Create the `autoinstall` folder if needed. [PortMaster offline installs](https://portmaster.games/installation/installing-ports/#option-2-offline-installation)
 4. Start **PortMaster** on the handheld. It picks up the ZIP and installs SPgram. Exit PortMaster, then launch **SPgram** from EmulationStation's **Ports** category. If it is missing, open **START → Game Settings → Update Gamelists** and check Ports again. 

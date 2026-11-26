@@ -291,27 +291,27 @@ do
         if image == sprite then scale_x, scale_y, arrow_x, arrow_y = sx, sy, x, y end
     end
     hold.screen:keypressed("r2")
-    now = 101
+    now = 100.65
     hold.screen:update_read_jump(now)
-    assert(hold.screen:read_jump_progress(now) == 0.5)
+    assert(math.abs(hold.screen:read_jump_progress(now) - 0.5) < 0.000001)
     hold.screen:draw_read_jump(600, 400, nil, now, 17)
-    assert(hold.screen.read_jump_hit.h == 53 and hold.screen.read_jump_hit.w == 41)
-    assert(scale_x == 33 / 32 and scale_y == scale_x)
-    assert(arrow_x ~= 593 or arrow_y ~= 391)
+    assert(hold.screen.read_jump_hit.h == 48 and hold.screen.read_jump_hit.w == 36)
+    assert(scale_x == 28 / 32 and scale_y == scale_x)
+    assert(arrow_x ~= 598 or arrow_y ~= 396)
     local motion = require("src.shared.system.media_settings")
     motion.set("ui_motion", false)
     hold.screen:draw_read_jump(600, 400, nil, now, 17)
     assert(hold.screen.read_jump_hit.h == 42 and scale_y == 22 / 32 and arrow_x == 604 and arrow_y == 402)
     motion.set("ui_motion", true)
-    now = 101.99
+    now = 101.29
     hold.screen:update_read_jump(now)
     assert(not hold.tg.history_state[hold.chat_id].jump)
-    now = 102
+    now = 101.3
     hold.screen:update_read_jump(now)
     assert(hold.tg.history_state[hold.chat_id].jump.newest)
     hold.screen:draw_read_jump(600, 400, nil, now, 17)
-    assert(hold.screen.read_jump_hit.h == 64 and hold.screen.read_jump_hit.w == 52)
-    assert(scale_x == 44 / 32 and scale_y == scale_x and arrow_x == 582)
+    assert(hold.screen.read_jump_hit.h == 53 and hold.screen.read_jump_hit.w == 41)
+    assert(scale_x == 33 / 32 and scale_y == scale_x and arrow_x == 593)
     love.graphics.draw = noop
     hold.screen:keyreleased("r2")
     hold.answer(0, 0, 10, 20)
@@ -384,6 +384,11 @@ do
     foreign.topic_id = {["@type"] = "messageTopicForum", forum_topic_id = 9}
     tg:handle_new_message(foreign)
     assert(#tg:get_messages(chat_id) == 3 and forum.by_id[9].last_message.id == foreign.id)
+    assert(forum.by_id[9].last_message.preview == foreign.content.text.text)
+    tg:handle({["@type"] = "updateMessageContent", chat_id = chat_id, message_id = foreign.id,
+        new_content = {["@type"] = "messageVideo", caption = {text = "Edited\nvideo caption"}}})
+    assert(forum.by_id[9].last_message.preview == "Edited video caption")
+    assert(forum.by_id[1].last_message.preview == view.history[5].content.text.text)
     screen.model.input = "Saved in General"
     screen:keypressed("escape")
     assert(not forum.active and #tg:get_messages(chat_id) == 0 and #forum.topics == 2)
@@ -416,12 +421,21 @@ do
     assert(view.requests[start + 1].object["@type"] == "openChat")
     assert(view.requests[start + 2].object["@type"] == "getForumTopics" and view.requests[start + 2].object.limit == 12)
     local function topic(id)
-        return {info = {forum_topic_id = id, name = "Topic " .. id}, unread_count = 500,
-            last_message = {id = id * id_step, content = {["@type"] = "messageText", text = {text = "A preview"}}}}
+        local icon = id == 1 and {custom_emoji_id = "0", color = 0x6FB9F0}
+            or {custom_emoji_id = tostring(id) .. "455000000000000001"}
+        return {info = {forum_topic_id = id, name = "Topic " .. id, icon = icon}, unread_count = 500,
+            last_message = {id = id * id_step, content = {["@type"] = "messageText", text = {text = "A preview " .. id}}}}
     end
     tg:handle({["@type"] = "forumTopics", ["@extra"] = forum.token, total_count = 1000,
         topics = {topic(1), topic(2)}, next_offset_date = 50, next_offset_forum_topic_id = 2})
+    local graphics, rendered, resolved = love.graphics, {}, {}
+    local emoji = {getDimensions = function() return 28, 28 end}
+    graphics.print = function(text) rendered[text] = true end
+    graphics.draw = function(image) assert(image == emoji); rendered.emoji = true end
+    screen.custom_emoji_image = function(id) resolved[#resolved + 1] = id; return emoji end
     screen:draw_forum_topics(group, forum, 224, 416, 480)
+    assert(rendered["#"] and rendered.emoji and rendered["A preview 1"] and rendered["A preview 2"])
+    assert(#resolved == 1 and resolved[1] == topic(2).info.icon.custom_emoji_id)
     tg:check_forum_topics(now)
     assert(#forum.topics == 2 and #forum.rows == 2)
     assert(not forum.topics[1].last_message.content)
@@ -432,6 +446,10 @@ do
     tg:handle({["@type"] = "forumTopics", ["@extra"] = forum.token, total_count = 1000,
         topics = more, next_offset_date = 60, next_offset_forum_topic_id = 22})
     assert(#forum.topics == 22)
+    resolved = {}
+    screen:draw_forum_topics(group, forum, 224, 416, 480)
+    assert(#resolved == #forum.rows - 1 and #forum.rows < 22)
+    graphics.draw, graphics.print = noop, noop
     for index = start + 1, #view.requests do
         local request = view.requests[index].object
         assert(request["@type"] ~= "getForumTopicHistory" and request["@type"] ~= "getChatHistory")
@@ -440,6 +458,7 @@ do
     tg:open_chat(chat_id)
     forum = tg.forum
     assert(#forum.topics == 2 and forum.token and not forum.loaded)
+    assert(forum.topics[1].last_message.preview == "A preview 1")
     screen:keypressed("return")
     assert(forum.active.info.forum_topic_id == 1)
     assert(view.requests[#view.requests].object["@type"] == "getForumTopicHistory")
@@ -453,20 +472,34 @@ print("A 1,000-topic forum displays short pages without opening topic histories,
 do
     local graphics = love.graphics
     local old_image, old_batch, old_draw = graphics.newImage, graphics.newSpriteBatch, graphics.draw
-    local read, write = love.filesystem.read, love.filesystem.write
+    local old_new_shader, old_set_shader = graphics.newShader, graphics.setShader
+    local read, write, info = love.filesystem.read, love.filesystem.write, love.filesystem.getInfo
     local added, batches, released, draw_x, draw_y = 0, 0, 0
     local image = {getWidth = function() return 600 end, getHeight = function() return 448 end,
         setFilter = noop, release = function() released = released + 1 end}
     local batch = {add = function() added = added + 1 end, release = function() released = released + 1 end}
-    graphics.newImage = function(path) assert(path == "res/telegram.png"); return image end
+    local paths = {}
+    local shader_count, active_shader, shader_used, draw_angle = 0
+    local uniforms = {}
+    local shader = {send = function(_, name, pair)
+        uniforms[name] = {unpack(pair)}
+    end}
+    graphics.newShader = function(source)
+        assert(source:find("Texel", 1, true))
+        shader_count = shader_count + 1
+        return shader
+    end
+    graphics.setShader = function(value) active_shader = value end
+    graphics.newImage = function(path) paths[#paths + 1] = path; return image end
     graphics.newSpriteBatch = function(texture, capacity)
-        assert(texture == image and capacity == 63)
+        assert(texture == image and (capacity == 63 or capacity == 99))
         batches = batches + 1
         return batch
     end
-    graphics.draw = function(drawable, x, y)
+    graphics.draw = function(drawable, x, y, angle)
         assert(drawable == batch)
-        draw_x, draw_y = x, y
+        shader_used = active_shader
+        draw_x, draw_y, draw_angle = x, y, angle
     end
     local saved
     love.filesystem.write = function(_, value) saved = value; return true end
@@ -477,25 +510,64 @@ do
     media.set_chat_background("retroscroll")
     assert(saved:find("chat_background=retroscroll", 1, true))
     assert(screen:draw_chat_background(0, 56, 640, 402, 0))
+    assert(paths[1] == "res/telegram.png")
     assert(draw_x == 0 and draw_y == 56 and added == 63 and batches == 1)
     screen:draw_chat_background(0, 56, 640, 402, 1)
     assert(draw_x == -74 and draw_y == 38 and batches == 1)
+    assert(shader_count == 0)
+    media.cycle_retroscroll_effect("color", 1)
+    screen:draw_chat_background(0, 56, 640, 402, 0)
+    assert(shader_used == shader and not active_shader and uniforms.hueRotation[1] == 1 and uniforms.hueRotation[2] == 0)
+    screen:draw_chat_background(0, 56, 640, 402, 9)
+    assert(math.abs(uniforms.hueRotation[1]) < 0.000001 and uniforms.hueRotation[2] == 1 and shader_count == 1 and batches == 1)
     media.set("ui_motion", false)
     screen:draw_chat_background(0, 56, 640, 402, 1)
-    assert(draw_x == 0 and draw_y == 56 and batches == 1)
+    assert(draw_x == 0 and draw_y == 56 and batches == 1 and not shader_used)
     media.set("ui_motion", true)
     screen:draw_chat_background(0, 56, 640, 402, 335)
     assert(draw_x == -40 and draw_y == 56 and batches == 1)
     media.set_chat_background("static")
     screen:draw_chat_background(0, 56, 640, 402, 1)
-    assert(draw_x == 0 and draw_y == 56)
+    assert(draw_x == 0 and draw_y == 56 and not shader_used)
     saved = "chat_background=retroscroll\n"
     media.load()
     assert(media.chat_background() == "retroscroll")
+    love.filesystem.getInfo = function(path)
+        return path == "effects/retroscroll/themes/night.png" and {type = "file"} or nil
+    end
+    media.set_chat_background("retroscroll", "night.png")
+    assert(screen:draw_chat_background(0, 56, 640, 402, 1))
+    assert(paths[2] == "effects/retroscroll/themes/night.png" and released == 2 and batches == 2)
+    media.cycle_retroscroll_effect("color", 2)
+    screen:draw_chat_background(0, 56, 640, 402, 0)
+    local teal = uniforms.tint[1]
+    screen:draw_chat_background(0, 56, 640, 402, 14)
+    assert(uniforms.tint[1] > teal and uniforms.hueRotation[1] == 0)
+    media.cycle_retroscroll_effect("motion", 1)
+    screen:draw_chat_background(0, 56, 640, 402, 4.5)
+    assert(draw_angle > 0 and draw_x == 320 and draw_y == 257 and batches == 3)
+    media.cycle_retroscroll_effect("color", 1)
+    media.cycle_retroscroll_effect("motion", 1)
+    screen:draw_chat_background(0, 56, 640, 402, 0)
+    local first_palette = uniforms.tint[1]
+    assert(uniforms.ripple[1] > 0)
+    screen:draw_chat_background(0, 56, 640, 402, 5)
+    assert(uniforms.tint[1] == first_palette)
+    screen:draw_chat_background(0, 56, 640, 402, 6)
+    assert(uniforms.tint[1] ~= first_palette and not active_shader)
+    media.cycle_retroscroll_effect("motion", 1)
+    screen:draw_chat_background(0, 56, 640, 402, 10)
+    assert(draw_x == -26 and not draw_angle and uniforms.ripple[1] == 0 and shader_count == 1)
+    screen:draw_chat_background(0, 56, 640, 402, 40)
+    assert(draw_x == 0 and draw_y == 56)
     media.set_chat_background("off")
-    assert(not screen:draw_chat_background(0, 56, 640, 402, 1) and released == 2)
+    assert(not screen:draw_chat_background(0, 56, 640, 402, 1) and released == 6)
+    assert(not screen:draw_chat_background(0, 56, 640, 402, 2) and released == 6)
+    media.cycle_retroscroll_effect("color", 1)
+    media.cycle_retroscroll_effect("motion", 1)
     graphics.newImage, graphics.newSpriteBatch, graphics.draw = old_image, old_batch, old_draw
-    love.filesystem.read, love.filesystem.write = read, write
+    graphics.newShader, graphics.setShader = old_new_shader, old_set_shader
+    love.filesystem.read, love.filesystem.write, love.filesystem.getInfo = read, write, info
 end
 
 local wrapping = 0

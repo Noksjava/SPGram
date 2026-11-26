@@ -65,7 +65,7 @@ return function(messenger_screen, layout)
         self.composer_focus = nil
     end
 
-    local READ_JUMP_HOLD = 2
+    local READ_JUMP_HOLD = 1.3
 
     function messenger_screen:begin_read_jump()
         if self.read_jump_hold and not self.read_jump_hold.released then return end
@@ -85,7 +85,8 @@ return function(messenger_screen, layout)
         local hold = self.read_jump_hold
         if not hold then return 0 end
         if hold.completed then return math.max(0, 1 - (now - hold.completed) / 0.18) end
-        return math.max(0, math.min(1, (now - hold.started) / READ_JUMP_HOLD))
+        if now >= hold.started + READ_JUMP_HOLD then return 1 end
+        return math.max(0, (now - hold.started) / READ_JUMP_HOLD)
     end
 
     function messenger_screen:jump_to_newest()

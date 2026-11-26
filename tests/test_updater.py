@@ -68,6 +68,14 @@ class UpdateTest(unittest.TestCase):
         self.store.install(archive, manifest)
         self.assertEqual((self.store.path("0.2.0") / "intro/spgram-intro.ogv").read_bytes(), b"fixture")
 
+    def test_background_tile_assets(self):
+        directory = updater.RETROSCROLL_THEMES
+        tile = f"{directory}/Night Sky.v2.PNG"
+        self.store.install(*self.package(extra=tile))
+        self.assertEqual((self.store.path("0.2.0") / tile).read_bytes(), b"fixture")
+        for name in ("nested/tile.png", "tile.lua", "old.jpg", "../tile.png", "CON .png"):
+            self.assertFalse(updater.allowed_path(f"{directory}/{name}"))
+
     def test_failure_and_interrupted_trial(self):
         args = self.package()
         self.store.install(*args)

@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 import xml.etree.ElementTree as ET
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
-from portmaster.updater import DEFAULT_REPOSITORY, UPDATE_KEY, UPDATE_REPOSITORY, read_update_key
+from portmaster.updater import DEFAULT_REPOSITORY, RETROSCROLL_THEMES, UPDATE_KEY, UPDATE_REPOSITORY, allowed_path, read_update_key
 
 
 ROOT = Path(__file__).resolve().parent
@@ -77,10 +77,17 @@ def package(version, repository, output, include_app_credentials=False, chat_pre
     tracked = set(subprocess.check_output(index, cwd=ROOT).decode("utf-8").split("\0"))
     deleted = set(subprocess.check_output([*index, "--deleted"], cwd=ROOT).decode("utf-8").split("\0"))
     tracked.difference_update(deleted)
-    wallpaper = "icons/background/wavelenght-tg.png"
+    wallpaper = f"{RETROSCROLL_THEMES}/wavelenght-tg.png"
     portable_assets = {"icons/app/spgram.png", "icons/app/bouncyarrow.png"}
     portable_assets.update(path.relative_to(ROOT).as_posix() for path in (ROOT / "fonts/retro").glob("*.ttf"))
     portable_assets.update(path.relative_to(ROOT).as_posix() for path in (ROOT / "licenses/retro").glob("*.txt"))
+    for path in (ROOT / RETROSCROLL_THEMES).glob("*"):
+        if path.is_file() and path.suffix.lower() == ".png":
+            name = path.relative_to(ROOT).as_posix()
+            if not allowed_path(name):
+                raise ValueError(f"Invalid background filename: {path.name}")
+            if name != wallpaper:
+                portable_assets.add(name)
     sources = {APP + path: path for path in ROOT_FILES | portable_assets}
     if (ROOT / wallpaper).is_file():
         portable_assets.add(wallpaper)

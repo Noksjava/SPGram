@@ -28,11 +28,12 @@ local MEMORY_ROWS = {
     small_texture_cache = {"Texture cache", "Small", "Standard"},
 }
 
-local BACKGROUND_MODES = {background_off = "off", background_static = "static", retroscroll = "retroscroll"}
+local BACKGROUND_MODES = {background_off = "off", background_static = "static"}
 local BACKGROUND_SECTION = {label = "Backgrounds", items = {"background_off", "background_static", "background_animated"}}
 local ANIMATED_SECTION = {label = "Animated", items = {"retroscroll"}}
+local RETROSCROLL_SECTION = {label = "Retroscroll"}
 local VISUAL_SUBMENUS = {performance = PERFORMANCE_SECTION, backgrounds = BACKGROUND_SECTION,
-    background_animated = ANIMATED_SECTION}
+    background_animated = ANIMATED_SECTION, retroscroll = RETROSCROLL_SECTION}
 
 local SECTIONS = {
     {id = "visual", label = "Visual settings", items = {"performance", "theme", "fonts", "ui_motion", "startup_intro", "backgrounds", "scale"},
@@ -86,8 +87,12 @@ ROW_ICONS.background_off = ROW_ICONS.minimize
 ROW_ICONS.background_static = ROW_ICONS.wallpaper
 ROW_ICONS.background_animated = ROW_ICONS.startup_intro
 ROW_ICONS.retroscroll = {"0000011", "0000110", "0011111", "0001100", "0011000", "0110000", "1100000"}
+ROW_ICONS.retroscroll_tile = ROW_ICONS.wallpaper
+ROW_ICONS.retroscroll_color = {"1000000", "1100000", "1110000", "1111000", "1111100", "1111110", "1111111"}
+ROW_ICONS.retroscroll_motion = ROW_ICONS.retroscroll
 BACKGROUND_SECTION.icon = ROW_ICONS.backgrounds
 ANIMATED_SECTION.icon = ROW_ICONS.background_animated
+RETROSCROLL_SECTION.icon = ROW_ICONS.retroscroll
 ROW_ICONS.video_thumbnails = ROW_ICONS.startup_intro
 ROW_ICONS.message_sound = SECTIONS[2].icon
 ROW_ICONS.keyboard_language = SECTIONS[3].icon
@@ -151,7 +156,9 @@ function settings_screen:items()
         end
         return items
     end
-    if self.section == PROFILE_SECTION then
+    if self.section == RETROSCROLL_SECTION then
+        return self.retroscroll_items
+    elseif self.section == PROFILE_SECTION then
         local items = {{id = "profile"}}
         for _, account in ipairs(self:accounts()) do
             items[#items + 1] = {id = "account:" .. account.key, account = account}
@@ -196,7 +203,8 @@ local ROW_LABELS = {
     keyboard_languages = "Keyboard languages", message_sound = "Message sound", startup_intro = "Startup intro",
     vibration_test = "Vibration test", minimize = "Minimize", wifi_radio = "Wi-Fi radio",
     wifi_keep_awake = "Keep Wi-Fi awake", reconnect = "Reconnect to Telegram", theme = "Theme",
-    background_off = "Off", background_static = "Static", retroscroll = "Retroscroll",
+    background_off = "Off", background_static = "Static",
+    retroscroll_color = "Color effect", retroscroll_motion = "Motion effect",
     abxy = "Swap Confirm / Back", show_mouse = "Mouse pointer",
     refresh_messages = "Refresh messages", memory_preset = "Memory preset", frame_rate = "Frame-rate cap", vsync = "VSync",
 }
@@ -208,6 +216,10 @@ end
 local function row_content(self, item, active_key)
     local id = item.id
     if item.section then return item.section.label, nil, true end
+    if item.tile then
+        local active = media_settings.chat_background() == "retroscroll" and media_settings.retroscroll_tile() == item.tile
+        return item.label, active and "Active" or nil
+    end
     if item.account then
         local account = item.account
         if account.key == active_key then
@@ -219,6 +231,10 @@ local function row_content(self, item, active_key)
     local setting = MEMORY_ROWS[id]
     if setting then return setting[1], setting[media_settings.get(id) and 2 or 3] end
     local label = ROW_LABELS[id]
+    if item.effect then
+        local _, value = media_settings.retroscroll_effect(item.effect)
+        return label, value
+    end
     if id == "scale" then return label, string.format("%.1f×", self.scale) end
     if id == "memory_preset" then return label, media_settings.memory_preset() end
     if id == "frame_rate" then return label, tostring(performance.get_fps()) .. " FPS" end
@@ -431,6 +447,16 @@ function settings_screen:activate_item(item)
         self.section = item.section
         self.selected_item, self.scroll_offset = 1, 0
         self.animated_item = nil
+        if self.section == RETROSCROLL_SECTION then
+            self.retroscroll_items = {{id = "background_off"}}
+            for _, tile in ipairs(media_settings.retroscroll_tiles()) do
+                self.retroscroll_items[#self.retroscroll_items + 1] = {
+                    id = "retroscroll_tile", tile = tile, label = (tile:gsub("%.[^.]+$", "")),
+                }
+            end
+            self.retroscroll_items[#self.retroscroll_items + 1] = {id = "retroscroll_color", effect = "color"}
+            self.retroscroll_items[#self.retroscroll_items + 1] = {id = "retroscroll_motion", effect = "motion"}
+        end
     elseif item.id == "exit_app" then
         if self.quit_confirm then
             love.event.quit()
@@ -494,6 +520,10 @@ function settings_screen:activate_item(item)
         end
     elseif item.id == "message_sound" or item.id == "startup_intro" then
         media_settings.toggle(item.id)
+    elseif item.effect then
+        media_settings.cycle_retroscroll_effect(item.effect, 1)
+    elseif item.tile then
+        media_settings.set_chat_background("retroscroll", item.tile)
     elseif BACKGROUND_MODES[item.id] then
         media_settings.set_chat_background(BACKGROUND_MODES[item.id])
     elseif item.id == "scale" then
@@ -617,6 +647,8 @@ function settings_screen:keypressed(key)
         if id == "scale" then
             local direction = key == "right" and 0.1 or -0.1
             self.scale = math.max(0.7, math.min(2.0, self.scale + direction))
+        elseif selected and selected.effect then
+            media_settings.cycle_retroscroll_effect(selected.effect, key == "right" and 1 or -1)
         elseif self.section == PERFORMANCE_SECTION or id == "abxy" or id == "show_mouse" then
             self:activate_item(selected)
         end

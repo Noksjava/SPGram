@@ -39,6 +39,7 @@ TARGET = {"os": "KNULLI", "arch": "aarch64", "runtime": "love_11.5",
 INSTALL_EXIT, ROLLBACK_EXIT, GITHUB_ROLLBACK_EXIT = 41, 42, 43
 CDN = {"release-assets.githubusercontent.com", "objects.githubusercontent.com"}
 APP_PREFIX = "telegramsp/gamedata/"
+RETROSCROLL_THEMES = "effects/retroscroll/themes"
 RELEASE_TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
 INSTALLER = re.compile(r"SPgram-PortMaster-v(" + VERSION.pattern + r")\.zip")
 
@@ -62,8 +63,9 @@ def allowed_path(name):
     parts = PurePosixPath(name).parts
     if len(name) > 240 or not parts or "/".join(parts) != name:
         return False
-    if any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", part)
-           or part.endswith(".") or part.split(".")[0].upper() in
+    theme = len(parts) == 4 and "/".join(parts[:3]) == RETROSCROLL_THEMES
+    if any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_. -]*" if theme else r"[A-Za-z0-9_][A-Za-z0-9_.-]*", part)
+           or part.endswith(".") or part.split(".")[0].rstrip().upper() in
            {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
             *(f"LPT{i}" for i in range(1, 10))}
            for part in parts):
@@ -76,6 +78,8 @@ def allowed_path(name):
         return True
     if len(parts) == 3 and parts[1] == "retro":
         return (parts[0] == "fonts" and name.endswith(".ttf")) or (parts[0] == "licenses" and name.endswith(".txt"))
+    if theme:
+        return PurePosixPath(name).suffix.lower() == ".png"
     return (len(parts) >= 2 and parts[0] in {"src", "threads"} and name.endswith(".lua")
             and not any(part.lower() in {"conf", "data", "private", "tdlib_files"} for part in parts))
 

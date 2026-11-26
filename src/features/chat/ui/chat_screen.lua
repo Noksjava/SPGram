@@ -540,13 +540,10 @@ function messenger_screen:draw()
     end
     if settings_selected then ui.focus_corners(logo_x - 1, logo_y - 1, logo_size + 2, logo_size + 2, colors.accent) end
     self.header_hits = {{action = "settings", x = logo_x - 4, w = logo_size + 8}}
-    local status_scale = math.min(1, w / 600)
-    local status_width = math.floor(260 * status_scale)
-    local status_x = math.floor((w - status_width) / 2)
-    local status_right = status_x + status_width
-    self:draw_status_panel(status_x, status_width, status_scale)
+    local status_x, status_right = self:draw_pixel_hud(w)
     local title = self.search_active and "Search" or self:current_list_entry().title
-    ui.text(ui.fit(title, f.subtitle, math.min(left_width, status_x) - 74), 66, 17, f.subtitle, colors.text)
+    ui.text(ui.fit(title, f.subtitle, status_x - 78), 66, (HEADER_HEIGHT - 2 - f.subtitle:getHeight()) / 2,
+        f.subtitle, colors.text)
     if self.search_active then
         local x = status_right + 10
         local width = w - x - 14
@@ -565,7 +562,7 @@ function messenger_screen:draw()
         local name = ui.fit(self.tg:user_name(me.id), f.normal, math.max(10, x - status_right - 24))
         local name_x = x - 11 - f.normal:getWidth(name)
         local avatar = self.tg:user_photo_image(me.id)
-        ui.retro_panel(x, y, size, size, colors.panel_alt, colors.accent_dark)
+        ui.rect(x, y, size, size, colors.panel_alt, 4)
         if avatar then
             local inner = size - 4
             local scale = math.max(inner / avatar:getWidth(), inner / avatar:getHeight())
@@ -577,12 +574,12 @@ function messenger_screen:draw()
         else
             ui.printf(ui.first_char(name), x, y + (size - f.normal:getHeight()) / 2, size, "center", f.normal, colors.accent)
         end
-        ui.text(name, name_x, 17, f.normal, selected and colors.accent or colors.text)
+        ui.text(name, name_x, (HEADER_HEIGHT - 2 - f.normal:getHeight()) / 2, f.normal, selected and colors.accent or colors.text)
         if selected then ui.focus_corners(x - 3, y - 3, 40, 40, colors.accent, header_lift) end
         self.header_hits[2] = {action = "profile", x = name_x - 4, w = w - name_x - 6}
     end
 
-    self:draw_loading_indicator(f, colors, w, left_width, right_width)
+    self:draw_loading_indicator(colors, w)
 
     local background = self:draw_chat_background(0, HEADER_HEIGHT, w, h - HEADER_HEIGHT - FOOTER_HEIGHT,
         love.timer.getTime())
@@ -858,6 +855,38 @@ function messenger_screen:draw_reader_transition(w, h, preview, thread)
     self:draw_text_preview(w, h, motion.preview, offset, motion.presence)
 end
 
+function messenger_screen:draw_reader_speaker(message, label, name, x, y, width, height, post)
+    local f, colors = self.fonts, ui.colors
+    local sender = message.sender_id or {}
+    local image
+    if sender.user_id then
+        image = self.tg:user_photo_image(sender.user_id, message.chat_id)
+    elseif sender.chat_id or post then
+        image = self.tg:chat_photo_image(sender.chat_id or message.chat_id)
+    end
+    local size = 44
+    local portrait_y = y + math.floor((height - size) / 2)
+    ui.retro_panel(x, portrait_y, size, size, colors.header, colors.accent)
+    if image then
+        local w, h = image:getWidth(), image:getHeight()
+        local scale = (size - 8) / math.max(w, h)
+        ui.set_color(colors.white)
+        love.graphics.draw(image, x + (size - w * scale) / 2, portrait_y + (size - h * scale) / 2, 0, scale)
+    else
+        ui.printf(ui.first_char(name), x, portrait_y + (size - f.subtitle:getHeight()) / 2,
+            size, "center", f.subtitle, colors.accent)
+    end
+    local name_x = x + size + 10
+    local name_w = width - size - 26
+    local label_y = y + math.floor((height - f.small:getHeight() - f.subtitle:getHeight() - 4) / 2)
+    local name_y = label_y + f.small:getHeight() + 4
+    local fitted = ui.fit(name, f.subtitle, name_w)
+    ui.text(label, name_x, label_y, f.small, colors.muted)
+    ui.retro_panel(name_x, name_y - 2, f.subtitle:getWidth(fitted) + 16, f.subtitle:getHeight() + 4,
+        colors.header, colors.accent_dark)
+    ui.text(fitted, name_x + 8, name_y, f.subtitle, colors.accent)
+end
+
 function messenger_screen:draw_text_preview(w, h, preview, offset, presence)
     local tp = preview or self.text_preview
     if not tp or self.fullscreen_media then return end
@@ -872,14 +901,25 @@ function messenger_screen:draw_text_preview(w, h, preview, offset, presence)
     local panel_y = (h - panel_h) / 2 + offset
     ui.rect(panel_x, panel_y, panel_w, panel_h, colors.panel, 8)
     ui.outline(panel_x, panel_y, panel_w, panel_h, colors.accent, 8)
-    local title = tp.post_message and self.tg:post_title(tp.post_message)
-        or tp.author_message and "Message from " .. self.tg:sender_name(tp.author_message) or tp.title or "Text file"
-    if tp.path then
-        title = tp.path:match("([^/]+)$") or title
-    elseif tp.message and tp.message.content and tp.message.content.document then
-        title = tp.message.content.document.file_name or title
+    local author = tp.author_message or (tp.comment_thread and tp.receipt_message)
+    local content_top = 40
+    if author then
+        local speaker_h = math.max(44, f.small:getHeight() + f.subtitle:getHeight() + 4)
+        local label = tp.post_message and "Post by" or tp.comment_thread and "Comment by" or "Message from"
+        local name = tp.post_message and self.tg:post_title(author) or self.tg:sender_name(author)
+        self:draw_reader_speaker(author, label, name, panel_x + 14, panel_y + 10, panel_w - 28, speaker_h, tp.post_message)
+        content_top = speaker_h + 28
+        ui.retro_panel(panel_x + 12, panel_y + content_top - 6, panel_w - 24,
+            panel_h - content_top - 22, colors.panel_alt, colors.accent_dark)
+    else
+        local title = tp.title or "Text file"
+        if tp.path then
+            title = tp.path:match("([^/]+)$") or title
+        elseif tp.message and tp.message.content and tp.message.content.document then
+            title = tp.message.content.document.file_name or title
+        end
+        ui.text(ui.fit(title, f.subtitle, panel_w - 24), panel_x + 12, panel_y + 8, f.subtitle, colors.text)
     end
-    ui.text(ui.fit(title, f.subtitle, panel_w - 24), panel_x + 12, panel_y + 8, f.subtitle, colors.text)
     if tp.loading then
         local prog = tp.download_progress or 0
         local pct = math.floor(prog * 100)
@@ -903,7 +943,7 @@ function messenger_screen:draw_text_preview(w, h, preview, offset, presence)
         return
     end
     local font = tp.message_text and f.normal or f.tiny
-    local width = panel_w - 32
+    local width = panel_w - (author and 44 or 32)
     if tp.receipts then
         local rows = {}
         for _, viewer in ipairs(tp.receipts.viewers or {}) do
@@ -947,7 +987,7 @@ function messenger_screen:draw_text_preview(w, h, preview, offset, presence)
     local lines = tp.lines or {}
     local line_h = font:getHeight() + (tp.message_text and 5 or 2)
     local note_height = tp.note and 32 or 0
-    local visible = math.max(1, math.floor((panel_h - 72 - note_height) / line_h))
+    local visible = math.max(1, math.floor((panel_h - content_top - 32 - note_height) / line_h))
     local media = tp.photo or tp.comment_media
     local photo_rows = media and math.max(3, math.floor(math.min(184, panel_h * 0.43) / line_h)) or 0
     local quote_rows = 0
@@ -975,8 +1015,8 @@ function messenger_screen:draw_text_preview(w, h, preview, offset, presence)
     tp.scroll = math.max(0, math.min(tp.max_scroll, tp.scroll or 0))
     local skip = math.floor(tp.scroll)
     local last = math.min(count, skip + visible)
-    local top = panel_y + 40
-    local left = panel_x + 12
+    local top = panel_y + content_top
+    local left = panel_x + (author and 20 or 12)
     local bottom = top + visible * line_h
     tp.photo_hit, tp.quote_hit = nil, nil
     love.graphics.setScissor(left, top, width, visible * line_h)
@@ -1096,7 +1136,7 @@ function messenger_screen:draw_text_preview(w, h, preview, offset, presence)
     if tp.max_scroll > 0 then
         local track_h = visible * line_h
         local thumb_h = math.max(12, track_h * visible / count)
-        local bar_x = panel_x + panel_w - 10
+        local bar_x = panel_x + panel_w - (author and 19 or 10)
         ui.rect(bar_x, top, 3, track_h, colors.panel_alt, 2)
         ui.rect(bar_x, top + (track_h - thumb_h) * tp.scroll / tp.max_scroll, 3, thumb_h, colors.accent, 2)
     end
@@ -2095,13 +2135,13 @@ function messenger_screen:is_loading()
     return false
 end
 
-function messenger_screen:draw_loading_indicator(f, colors, w, left_width, right_width)
+function messenger_screen:draw_loading_indicator(colors, w)
     if not self:is_loading() then return end
     local now = love.timer.getTime()
 
     local step = math.floor(now * 8) % 3
     for i = 0, 2 do
-        ui.rect(math.floor(w / 2) - 9 + i * 7, math.floor(HEADER_HEIGHT / 2) + 7, 4, 4,
+        ui.rect(math.floor(w / 2) - 8 + i * 6, HEADER_HEIGHT - 7, 4, 3,
             i == step and colors.accent or colors.accent_dark)
     end
 end
@@ -2136,21 +2176,87 @@ function messenger_screen:chat_row_at(y)
     end
 end
 
+local RETROSCROLL_SHADER = [[
+    extern vec2 hueRotation;
+    extern vec3 tint;
+    extern vec2 ripple;
+
+    vec4 effect(vec4 color, Image texture, vec2 uv, vec2 screen) {
+        if (ripple.x > 0.0) {
+            uv.x = fract(uv.x + ripple.x * sin(screen.y * 0.055 + ripple.y));
+        }
+        vec4 pixel = Texel(texture, uv);
+        if (tint.r > 0.0) {
+            float luma = dot(pixel.rgb, vec3(0.299, 0.587, 0.114));
+            vec3 toned = clamp((0.24 + 0.9 * luma) * tint, 0.0, 1.0);
+            pixel.rgb = mix(pixel.rgb, toned, 0.65);
+        } else if (dot(hueRotation, hueRotation) > 0.5) {
+            float luma = dot(pixel.rgb, vec3(0.299, 0.587, 0.114));
+            float i = dot(pixel.rgb, vec3(0.596, -0.275, -0.321));
+            float q = dot(pixel.rgb, vec3(0.212, -0.523, 0.311));
+            vec2 chroma = vec2(i * hueRotation.x - q * hueRotation.y, i * hueRotation.y + q * hueRotation.x);
+            pixel.rgb = clamp(luma + vec3(dot(chroma, vec2(0.956, 0.621)),
+                dot(chroma, vec2(-0.272, -0.647)), dot(chroma, vec2(-1.106, 1.703))), 0.0, 1.0);
+        }
+        return pixel * color;
+    }
+]]
+
+local RETROSCROLL_PALETTE = {
+    {0.36, 0.95, 0.82}, {1.00, 0.76, 0.35}, {0.92, 0.49, 0.76}, {0.48, 0.65, 1.00},
+}
+local RETROSCROLL_UV_OFF = {0, 0}
+local RETROSCROLL_TINT_OFF = {0, 0, 0}
+local SWAY_ANGLE = math.rad(3.5)
+
+function messenger_screen:retroscroll_effect_shader(color, motion, now)
+    if color == "original" and motion ~= "ripple" then return end
+    if self.retroscroll_shader == nil then
+        local ok, shader = pcall(love.graphics.newShader, RETROSCROLL_SHADER)
+        self.retroscroll_shader = ok and shader or false
+    end
+    local shader = self.retroscroll_shader
+    if not shader then return end
+
+    local rotation, tint, ripple = RETROSCROLL_UV_OFF, RETROSCROLL_TINT_OFF, RETROSCROLL_UV_OFF
+    if color == "gradient" or color == "two_tone" or motion == "ripple" then
+        self.retroscroll_uniforms = self.retroscroll_uniforms or {rotation = {}, tint = {}, ripple = {}}
+    end
+    if color == "gradient" then
+        local phase = now % 36 * (2 * math.pi / 36)
+        rotation = self.retroscroll_uniforms.rotation
+        rotation[1], rotation[2] = math.cos(phase), math.sin(phase)
+    elseif color == "two_tone" then
+        local blend = (1 - math.cos(now % 28 * (2 * math.pi / 28))) * 0.5
+        tint = self.retroscroll_uniforms.tint
+        tint[1], tint[2], tint[3] = 0.34 + 0.49 * blend, 0.96 - 0.45 * blend, 0.80 + 0.20 * blend
+    elseif color == "palette" then
+        tint = RETROSCROLL_PALETTE[math.floor(now / 6) % #RETROSCROLL_PALETTE + 1]
+    end
+    if motion == "ripple" then
+        ripple = self.retroscroll_uniforms.ripple
+        ripple[1], ripple[2] = 0.055, now % 7 * (2 * math.pi / 7)
+    end
+    shader:send("hueRotation", rotation)
+    shader:send("tint", tint)
+    shader:send("ripple", ripple)
+    return shader
+end
+
 function messenger_screen:draw_chat_background(x, y, width, height, now)
     local mode = media_settings.chat_background()
     local background = self.chat_background
-    if mode == "off" then
+    local tile = mode ~= "off" and media_settings.background_tile() or nil
+    if tile ~= self.chat_background_tile or not tile then
         if background then
             if background.batch then background.batch:release() end
             background.image:release()
         end
-        self.chat_background = nil
-        return false
+        self.chat_background, self.chat_background_tile, background = nil, tile, nil
     end
-    if width <= 0 or height <= 0 then return false end
+    if not tile or width <= 0 or height <= 0 then return false end
     if background == nil then
-        local path = "icons/background/wavelenght-tg.png"
-        if not love.filesystem.getInfo(path) then path = "res/telegram.png" end
+        local path = media_settings.background_asset(tile)
         local ok, image = pcall(love.graphics.newImage, path)
         if not ok or not image then self.chat_background = false; return false end
         image:setFilter("linear", "linear")
@@ -2161,8 +2267,13 @@ function messenger_screen:draw_chat_background(x, y, width, height, now)
     elseif not background then
         return false
     end
-    local columns = math.ceil(width / background.width) + 1
-    local rows = math.ceil(height / background.height) + 1
+    local moving = mode == "retroscroll" and media_settings.get("ui_motion")
+    local motion = moving and media_settings.retroscroll_effect("motion")
+    local padding = motion == "sway" and math.ceil(math.max(width, height) * math.sin(SWAY_ANGLE) / 2) + 2 or 0
+    local pad_x = math.ceil(padding / background.width) * background.width
+    local pad_y = math.ceil(padding / background.height) * background.height
+    local columns = math.ceil((width + 2 * pad_x) / background.width) + 1
+    local rows = math.ceil((height + 2 * pad_y) / background.height) + 1
     if columns ~= background.columns or rows ~= background.rows then
         if background.batch then background.batch:release() end
         local batch = love.graphics.newSpriteBatch(background.image, columns * rows, "static")
@@ -2174,14 +2285,29 @@ function messenger_screen:draw_chat_background(x, y, width, height, now)
         end
         background.batch, background.columns, background.rows = batch, columns, rows
     end
-    local dx, dy = 0, 0
-    if mode == "retroscroll" and media_settings.get("ui_motion") then
-        dx = (-math.floor(now * 16)) % background.width
-        dy = math.floor(now * 18) % background.height
+    local dx, dy, angle, shader = 0, 0, 0, nil
+    if moving then
+        if motion == "orbit" then
+            local phase = now % 40 * (2 * math.pi / 40)
+            dx = math.floor(116 * math.sin(phase)) % background.width
+            dy = math.floor(82 * (1 - math.cos(phase))) % background.height
+        else
+            dx = (-math.floor(now * 16)) % background.width
+            dy = math.floor(now * 18) % background.height
+            if motion == "sway" then angle = math.sin(now % 18 * (2 * math.pi / 18)) * SWAY_ANGLE end
+        end
+        shader = self:retroscroll_effect_shader(media_settings.retroscroll_effect("color"), motion, now)
     end
     love.graphics.setScissor(x, y, width, height)
     ui.set_color(ui.colors.white, 0.28)
-    love.graphics.draw(background.batch, x - dx, y - dy)
+    if shader then love.graphics.setShader(shader) end
+    if motion == "sway" then
+        love.graphics.draw(background.batch, x + width / 2, y + height / 2, angle, 1, 1,
+            width / 2 + dx + pad_x, height / 2 + dy + pad_y)
+    else
+        love.graphics.draw(background.batch, x - dx, y - dy)
+    end
+    if shader then love.graphics.setShader() end
     love.graphics.setScissor()
     ui.set_color(ui.colors.white)
     return true
@@ -2432,6 +2558,27 @@ function messenger_screen:conversation_layout(chat, messages, sponsored, bot, wi
     return layout, layout.total_height
 end
 
+function messenger_screen:draw_forum_topic_icon(info, x, y, size)
+    local icon = info.icon or {}
+    local emoji_id = icon.custom_emoji_id
+    local image, repaint
+    if emoji_id and tostring(emoji_id) ~= "0" then image, repaint = self.custom_emoji_image(emoji_id) end
+    if image then
+        local w, h = image:getDimensions()
+        local scale = size / math.max(w, h)
+        ui.set_color(repaint and ui.colors.text or ui.colors.white)
+        love.graphics.draw(image, x + (size - w * scale) / 2, y + (size - h * scale) / 2, 0, scale)
+        return
+    end
+    local rgb = tonumber(icon.color)
+    local color = rgb and {math.floor(rgb / 65536) % 256 / 255, math.floor(rgb / 256) % 256 / 255,
+        rgb % 256 / 255} or ui.colors.accent_dark
+    local font = self.fonts.normal
+    local label = info.forum_topic_id == 1 and "#" or ui.first_char(info.name or "Topic")
+    ui.rect(x, y, size, size, color, 6)
+    ui.printf(label, x, y + (size - font:getHeight()) / 2, size, "center", font, ui.contrasting_text(color))
+end
+
 function messenger_screen:draw_forum_topics(chat, forum, x, width, height, background)
     local f, colors = self.fonts, ui.colors
     local y = HEADER_HEIGHT
@@ -2440,7 +2587,8 @@ function messenger_screen:draw_forum_topics(chat, forum, x, width, height, backg
     ui.text(ui.fit(chat.title or "Group", f.subtitle, width - 34), x + 16, y + 12, f.subtitle, colors.text)
     ui.text("Topics", x + 16, y + 40, f.tiny, colors.accent)
     y = y + CHAT_HEADER_HEIGHT + 8
-    local row_h = math.max(36, f.normal:getHeight() + 14)
+    local icon_size = 28
+    local row_h = math.max(42, f.normal:getHeight() + f.tiny:getHeight() + 16)
     local visible = math.max(1, math.floor((height - y - FOOTER_HEIGHT - 26) / (row_h + 4)))
     forum.visible, forum.rows = visible, {}
     local first = math.max(1, forum.index - visible + 1, math.min(forum.index, forum.first or 1))
@@ -2451,7 +2599,8 @@ function messenger_screen:draw_forum_topics(chat, forum, x, width, height, backg
         local row_x, row_w = x + 12, width - 24
         ui.retro_panel(row_x, y, row_w, row_h, selected and colors.accent_dark or colors.panel,
             selected and colors.accent or colors.header)
-        local badge = (topic.unread_count or 0) > 0 and tostring(topic.unread_count) or ""
+        local unread = topic.unread_count or 0
+        local badge = unread > 99 and "99+" or unread > 0 and tostring(unread) or ""
         local detail = topic.info.is_closed and "Closed" or topic.is_pinned and "Pinned" or ""
         local right = row_x + row_w - 10
         if badge ~= "" then
@@ -2467,8 +2616,15 @@ function messenger_screen:draw_forum_topics(chat, forum, x, width, height, backg
             ui.text(detail, right, y + (row_h - f.tiny:getHeight()) / 2, f.tiny, colors.muted)
             right = right - 7
         end
-        ui.text(ui.fit(topic.info.name or "Topic", f.normal, right - row_x - 12),
-            row_x + 10, y + (row_h - f.normal:getHeight()) / 2, f.normal, colors.text)
+        self:draw_forum_topic_icon(topic.info, row_x + 9, y + math.floor((row_h - icon_size) / 2), icon_size)
+        local text_x = row_x + icon_size + 17
+        local preview = topic.last_message and topic.last_message.preview or ""
+        local text_h = f.normal:getHeight() + (preview ~= "" and f.tiny:getHeight() + 2 or 0)
+        local text_y = y + math.floor((row_h - text_h) / 2)
+        ui.text(ui.fit(topic.info.name or "Topic", f.normal, right - text_x), text_x, text_y, f.normal, colors.text)
+        if preview ~= "" then
+            ui.text(ui.fit(preview, f.tiny, right - text_x), text_x, text_y + f.normal:getHeight() + 2, f.tiny, colors.muted)
+        end
         forum.rows[#forum.rows + 1] = {x = row_x, y = y, w = row_w, h = row_h, index = i}
         y = y + row_h + 4
     end
@@ -2955,8 +3111,9 @@ function messenger_screen:draw_read_jump(x, y, state, now, unread)
     local progress = self:read_jump_progress(now)
     local motion = media_settings.get("ui_motion")
     local growth = motion and progress * progress * (3 - 2 * progress) or 0
-    local extra = math.floor(22 * growth + 0.5)
-    local size = 22 + extra
+    local arrow_size = 22
+    local extra = math.floor(arrow_size * 0.5 * growth + 0.5)
+    local size = arrow_size + extra
     local left = x - extra
     self.read_jump_hit = {x = left, y = y - extra, w = w + extra, h = h + extra}
     local loading = state and state.jump
@@ -3369,39 +3526,41 @@ function messenger_screen:refresh_status()
     end
 end
 
-function messenger_screen:draw_status_panel(x, width, scale)
+function messenger_screen:draw_pixel_hud(screen_width)
     local status, fonts, colors = self.status_info, self.fonts, ui.colors
-    local height = math.floor(40 * scale)
-    local y = math.floor((HEADER_HEIGHT - 2 - height) / 2)
-    local center = y + math.floor(height / 2)
-    local function size(px) return math.floor(px * scale + 0.5) end
-    local clock = scale >= 0.85 and fonts.normal or fonts.small
-    local label = scale >= 0.85 and fonts.small or fonts.tiny
-    ui.retro_panel(x, y, width, height, colors.panel, colors.accent_dark)
-    ui.retro_panel(x + size(4), y + size(4), size(92), height - size(8), colors.accent_dark, colors.header)
-    local clock_width = size(84)
-    ui.printf(ui.fit(status.time, clock, clock_width), x + size(8), center - math.floor(clock:getHeight() / 2),
-        clock_width, "center", clock, colors.accent)
-    ui.rect(x + size(192), y + size(7), size(2), height - size(14), colors.accent_dark)
-    local battery_x = x + size(109)
-    ui.outline(battery_x, center - size(8), size(27), size(16), colors.muted, 0)
-    ui.rect(battery_x + size(27), center - size(4), size(3), size(8), colors.muted)
+    local clock = screen_width >= 560 and fonts.normal or fonts.small
+    local label = screen_width >= 560 and fonts.small or fonts.tiny
+    local clock_w = math.max(clock:getWidth("88:88"), clock:getWidth(status.time))
+    local percent_w = label:getWidth("100%")
+    local gap = screen_width >= 560 and 13 or 8
+    local battery_w, signal_w = 23, 18
+    local width = clock_w + gap + battery_w + 5 + percent_w + gap + signal_w
+    local x = math.floor((screen_width - width) / 2)
+    local center = (HEADER_HEIGHT - 2) / 2
+    local clock_x = x + math.floor((clock_w - clock:getWidth(status.time)) / 2)
+    ui.text(status.time, clock_x, center - math.floor(clock:getHeight() / 2), clock, colors.accent)
+
+    local battery_x = x + clock_w + gap
+    ui.outline(battery_x, center - 6, 21, 12, colors.muted, 0)
+    ui.rect(battery_x + 21, center - 3, 2, 6, colors.muted)
     local battery = status.battery
-    if battery and battery >= 0 then
-        local filled = math.ceil(math.min(battery, 100) / 25)
-        for segment = 0, 3 do
-            ui.rect(battery_x + size(3 + segment * 5), center - size(5), size(4), size(10),
-                segment >= filled and colors.accent_dark or battery <= 15 and colors.red or colors.accent)
-        end
+    local known = battery and battery >= 0
+    local filled = known and math.ceil(math.min(battery, 100) / 25) or 0
+    local charge_ink = known and battery <= 15 and colors.red or colors.muted
+    for segment = 0, 3 do
+        ui.rect(battery_x + 3 + segment * 4, center - 3, 3, 6,
+            segment >= filled and colors.accent_dark or charge_ink)
     end
-    local percentage = battery and battery >= 0 and tostring(math.floor(battery)) .. "%" or "—"
-    ui.printf(ui.fit(percentage, label, size(44)), x + size(143), center - math.floor(label:getHeight() / 2),
-        size(44), "center", label, colors.text)
+    local percentage = known and tostring(math.floor(math.min(battery, 100))) .. "%" or "—"
+    ui.text(percentage, battery_x + battery_w + 5, center - math.floor(label:getHeight() / 2), label, charge_ink)
+
+    local signal_x = x + width - signal_w
     for bar = 1, 4 do
-        local bar_height = size(5 + bar * 4)
-        ui.rect(x + size(206 + (bar - 1) * 10), center + size(10) - bar_height, size(7), bar_height,
-            bar <= (status.signal or 0) and colors.accent or colors.accent_dark)
+        local height = 2 + bar * 3
+        ui.rect(signal_x + (bar - 1) * 5, center + 7 - height, 3, height,
+            bar <= (status.signal or 0) and colors.muted or colors.accent_dark)
     end
+    return x, x + width
 end
 
 function messenger_screen:draw_input(panel_x, panel_w, h)

@@ -2,7 +2,7 @@
   "schema": 1,
   "repository": "Noksjava/SPGram",
   "channel": "preview",
-  "version": "0.2.71",
+  "version": "0.2.72",
   "target": {
     "os": "KNULLI",
     "arch": "aarch64",
@@ -11,13 +11,13 @@
   },
   "minimum_updater": 3,
   "asset": {
-    "name": "SPgram-PortMaster-v0.2.71.zip",
+    "name": "SPgram-PortMaster-v0.2.72.zip",
     "url": "",
     "sha256": "",
     "size": 0
   },
   "update_asset": {
-    "name": "SPgram-Update-v0.2.71.zip",
+    "name": "SPgram-Update-v0.2.72.zip",
     "url": "",
     "sha256": "",
     "size": 0

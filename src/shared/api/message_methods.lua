@@ -156,6 +156,21 @@ return function(telegram)
         return "[message]"
     end
 
+    function telegram:set_forum_last_message(topic, message)
+        local caption = message.content and message.content.caption
+        local preview = caption and caption.text
+        if not preview or preview == "" then preview = self:message_text(message) end
+        local cutoff = 321
+        local byte = preview:byte(cutoff)
+        while byte and byte >= 128 and byte <= 191 do
+            cutoff = cutoff - 1
+            byte = preview:byte(cutoff)
+        end
+        if #preview >= 321 then preview = preview:sub(1, cutoff - 1) .. "…" end
+        preview = preview:gsub("%s+", " "):match("^%s*(.-)%s*$")
+        topic.last_message = {id = message.id, preview = preview}
+    end
+
     function telegram:message_reply(message)
         local reply = message and message.reply_to
         if reply and reply["@type"] == "messageReplyToMessage" then return reply end
@@ -1151,7 +1166,7 @@ return function(telegram)
         local topic_id = message.topic_id and message.topic_id.forum_topic_id
         local topic = scoped and topic_id and self:find_forum_topic(forum, topic_id)
         if topic and (not topic.last_message or message.id > topic.last_message.id) then
-            topic.last_message = {id = message.id}
+            self:set_forum_last_message(topic, message)
             if not message.is_outgoing and message.id > (topic.last_read_inbox_message_id or 0) then
                 topic.unread_count = (topic.unread_count or 0) + 1
             end
@@ -1199,6 +1214,12 @@ return function(telegram)
             return
         end
         self.delivery_feedback = {chat_id = message.chat_id, id = message.id, at = love.timer.getTime()}
+        local forum = self.forum
+        local topic_id = message.topic_id and message.topic_id.forum_topic_id
+        local topic = forum and forum.chat_id == message.chat_id and topic_id and self:find_forum_topic(forum, topic_id)
+        if topic and topic.last_message and topic.last_message.id == old_id then
+            self:set_forum_last_message(topic, message)
+        end
         local list = self.messages[message.chat_id]
         if list then
             for i, existing in ipairs(list) do
@@ -1212,6 +1233,15 @@ return function(telegram)
     end
 
     function telegram:handle_message_content(update)
+        local forum = self.forum
+        if forum and forum.chat_id == update.chat_id then
+            for _, topic in ipairs(forum.topics) do
+                if topic.last_message and topic.last_message.id == update.message_id then
+                    self:set_forum_last_message(topic, {id = update.message_id, content = update.new_content})
+                    break
+                end
+            end
+        end
         local list = self.messages[update.chat_id]
         if not list then
             return
@@ -1250,6 +1280,12 @@ return function(telegram)
         local deleted = {}
         for _, id in ipairs(update.message_ids or {}) do
             deleted[id] = true
+        end
+        local forum = self.forum
+        if update.is_permanent and forum and forum.chat_id == update.chat_id then
+            for _, topic in ipairs(forum.topics) do
+                if topic.last_message and deleted[topic.last_message.id] then topic.last_message = nil end
+            end
         end
         for _, storage in ipairs({self.messages, self.dialog_search_results or {}}) do
             local list = storage[update.chat_id]
