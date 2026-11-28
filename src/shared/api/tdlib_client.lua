@@ -123,6 +123,7 @@ function telegram.new()
     self.audio_by_message = {}
     self.avatar_photos, self.avatar_pending = {}, nil
     self.notifications = {}
+    self.outgoing_motion, self.pending_message_retry = nil, nil
     self.live_message_pings = {}
     self.forward_origin_titles = {}
     self.reply_previews, self.reply_preview_order = {}, {}
@@ -371,6 +372,7 @@ function telegram:reset_account_state()
     self.qr_requested_at = 0
     self.password_hint = ""
     self.notifications = {}
+    self.outgoing_motion, self.pending_message_retry = nil, nil
     self.live_message_pings = {}
     self.forward_origin_titles = {}
     self.reply_previews, self.reply_preview_order = {}, {}
@@ -461,7 +463,12 @@ function telegram:push_notification(notice)
     local ping = self.live_message_pings and self.live_message_pings[notice.chat_id]
     notice.motion_started = ping and ping.motion_started or notice.created
     for index = #self.notifications, 1, -1 do
-        if self.notifications[index].chat_id == notice.chat_id then
+        local previous = self.notifications[index]
+        if previous.chat_id == notice.chat_id then
+            if notice.created - previous.created < 6 then
+                notice.count = (previous.count or 1) + 1
+                notice.motion_started = previous.motion_started or previous.created
+            end
             table.remove(self.notifications, index)
         end
     end
@@ -535,6 +542,10 @@ function telegram:update(dt)
     local receipts = self.message_receipt_lookup
     if receipts and receipts.deadline and now >= receipts.deadline then
         receipts.status, receipts.deadline, receipts.token = "Could not load read receipts. Try again.", nil, nil
+    end
+    if self.pending_message_retry and now >= self.pending_message_retry.deadline then
+        self.pending_message_retry = nil
+        self.action_error, self.action_status = "Could not confirm the retry.", ""
     end
     self:poll_video_progress(now)
     if self.ready and not self.foreground_media and not (self.options and self.options.sign_in_only)
@@ -733,6 +744,7 @@ function telegram:handle(object)
         end
     elseif kind == "updateMessageSendFailed" then
         self:update_comment_delivery(object)
+        self:handle_send_failed(object)
         if self.sent_picker_gifs and object.message then
             self.sent_picker_gifs[tostring(object.message.chat_id) .. ":" .. tostring(object.old_message_id)] = nil
         end
@@ -813,6 +825,7 @@ function telegram:handle(object)
     elseif kind == "user" then
         self:handle_user(object)
     elseif kind == "messages" then
+        if self:handle_message_retry(object, extra) then return end
         local extra = object["@extra"] or ""
         if extra:match("^profile_media:") then
             self:handle_profile_media(object)
@@ -902,6 +915,7 @@ function telegram:handle(object)
         end
         self:handle_new_message(object)
     elseif kind == "error" then
+        if self:handle_message_retry(object, extra) then return end
         local message = tostring(object.message or "TDLib error")
         local extra = tostring(object["@extra"] or "")
         if extra:match("^auth_input:") then

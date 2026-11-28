@@ -31,9 +31,13 @@ local MEMORY_ROWS = {
 local BACKGROUND_MODES = {background_off = "off", background_static = "static"}
 local BACKGROUND_SECTION = {label = "Backgrounds", items = {"background_off", "background_static", "background_animated"}}
 local ANIMATED_SECTION = {label = "Animated", items = {"retroscroll"}}
-local RETROSCROLL_SECTION = {label = "Retroscroll"}
+local RETROSCROLL_SECTION = {label = "Retroscroll", items = {"retroscroll_select", "retroscroll_color", "retroscroll_motion"}}
+local RETROSCROLL_SELECT = {label = "Select"}
+local RETROSCROLL_COLOR = {id = "retroscroll_color", label = "Color effects", effect = "color"}
+local RETROSCROLL_MOTION = {id = "retroscroll_motion", label = "Motion effects", effect = "motion"}
 local VISUAL_SUBMENUS = {performance = PERFORMANCE_SECTION, backgrounds = BACKGROUND_SECTION,
-    background_animated = ANIMATED_SECTION, retroscroll = RETROSCROLL_SECTION}
+    background_animated = ANIMATED_SECTION, retroscroll = RETROSCROLL_SECTION,
+    retroscroll_select = RETROSCROLL_SELECT, retroscroll_color = RETROSCROLL_COLOR, retroscroll_motion = RETROSCROLL_MOTION}
 
 local SECTIONS = {
     {id = "visual", label = "Visual settings", items = {"performance", "theme", "fonts", "ui_motion", "startup_intro", "backgrounds", "scale"},
@@ -93,6 +97,10 @@ ROW_ICONS.retroscroll_motion = ROW_ICONS.retroscroll
 BACKGROUND_SECTION.icon = ROW_ICONS.backgrounds
 ANIMATED_SECTION.icon = ROW_ICONS.background_animated
 RETROSCROLL_SECTION.icon = ROW_ICONS.retroscroll
+RETROSCROLL_SELECT.icon = ROW_ICONS.retroscroll_tile
+RETROSCROLL_COLOR.icon = ROW_ICONS.retroscroll_color
+RETROSCROLL_MOTION.icon = ROW_ICONS.retroscroll_motion
+local PREVIEW_HEIGHT = 90
 ROW_ICONS.video_thumbnails = ROW_ICONS.startup_intro
 ROW_ICONS.message_sound = SECTIONS[2].icon
 ROW_ICONS.keyboard_language = SECTIONS[3].icon
@@ -104,10 +112,17 @@ ROW_ICONS.options = SECTIONS[4].icon
 ROW_ICONS.search = ROW_ICONS.media_shortcuts
 ROW_ICONS.keyboard = ROW_ICONS.keyboard_languages
 
+function settings_screen:shows_wallpaper_preview()
+    local section = self.section
+    return self.callbacks.draw_wallpaper_preview and (section == RETROSCROLL_SECTION or section == RETROSCROLL_SELECT
+        or section == RETROSCROLL_COLOR or section == RETROSCROLL_MOTION)
+end
+
 function settings_screen:row_layout(height)
     local item_height = ui.settings_row_height(self.fonts.normal)
     local row_height = item_height + 6
-    local visible = math.max(1, math.floor((height - START_Y - FOOTER_HEIGHT) / row_height))
+    local reserved = self:shows_wallpaper_preview() and PREVIEW_HEIGHT or 0
+    local visible = math.max(1, math.floor((height - START_Y - FOOTER_HEIGHT - reserved) / row_height))
     return visible, item_height, row_height
 end
 
@@ -156,8 +171,14 @@ function settings_screen:items()
         end
         return items
     end
-    if self.section == RETROSCROLL_SECTION then
+    if self.section == RETROSCROLL_SELECT then
         return self.retroscroll_items
+    elseif self.section and self.section.effect then
+        local effect, items = self.section.effect, {}
+        for index, option in ipairs(media_settings.retroscroll_effect_options(effect)) do
+            items[index] = {id = self.section.id, effect = effect, option = option}
+        end
+        return items
     elseif self.section == PROFILE_SECTION then
         local items = {{id = "profile"}}
         for _, account in ipairs(self:accounts()) do
@@ -172,7 +193,7 @@ function settings_screen:items()
             if (id ~= "wifi_keep_awake" or self.tg:wifi_power_supported())
                 and (id ~= "wifi_radio" or self.tg:wifi_radio_supported())
                 and (id ~= "calibrate_faces" or self.callbacks.calibrate_faces) then
-                items[#items + 1] = {id = id, section = VISUAL_SUBMENUS[id]}
+                items[#items + 1] = {id = id, section = VISUAL_SUBMENUS[id], disabled = id == "minimize"}
             end
         end
         return items
@@ -186,12 +207,14 @@ function settings_screen:items()
 end
 
 function settings_screen:enter()
+    if self.callbacks.release_wallpaper_preview then self.callbacks.release_wallpaper_preview() end
     self.scale = ui.get_scale()
     self.section, self.section_parent = nil, nil
     self.fonts_open, self.languages_open, self.release_open = false, false, false
     self.keymap_open, self.keymap_waiting, self.face_calibration = false, nil, nil
     self.selected_item, self.scroll_offset = 2, 0
-    self.animated_item = nil
+    self.focus_motion, self.section_motion_at, self.pressed_at = nil, nil, nil
+    self.pressed_index, self.pressed_section = nil, nil
     self.quit_confirm, self.logout_confirm = false, false
     media_settings.load()
 end
@@ -204,7 +227,6 @@ local ROW_LABELS = {
     vibration_test = "Vibration test", minimize = "Minimize", wifi_radio = "Wi-Fi radio",
     wifi_keep_awake = "Keep Wi-Fi awake", reconnect = "Reconnect to Telegram", theme = "Theme",
     background_off = "Off", background_static = "Static",
-    retroscroll_color = "Color effect", retroscroll_motion = "Motion effect",
     abxy = "Swap Confirm / Back", show_mouse = "Mouse pointer",
     refresh_messages = "Refresh messages", memory_preset = "Memory preset", frame_rate = "Frame-rate cap", vsync = "VSync",
 }
@@ -231,9 +253,10 @@ local function row_content(self, item, active_key)
     local setting = MEMORY_ROWS[id]
     if setting then return setting[1], setting[media_settings.get(id) and 2 or 3] end
     local label = ROW_LABELS[id]
+    if item.disabled then return label, "Unavailable" end
     if item.effect then
-        local _, value = media_settings.retroscroll_effect(item.effect)
-        return label, value
+        local active = media_settings.retroscroll_effect(item.effect) == item.option[1]
+        return item.option[2], active and "Active" or nil
     end
     if id == "scale" then return label, string.format("%.1f×", self.scale) end
     if id == "memory_preset" then return label, media_settings.memory_preset() end
@@ -279,45 +302,64 @@ function settings_screen:draw()
     local icon = self.section and self.section.icon
     if icon then ui.pixel_icon(icon, 24, 17, colors.accent) end
     local title_x = icon and 56 or 24
-    ui.text(ui.fit(title, f.subtitle, w - title_x - 144), title_x, 15, f.subtitle, colors.text)
+    local now = love.timer.getTime()
+    local slide = ui.panel_slide(now - (self.section_motion_at or -1), 0.22, self.section_motion_distance or 0)
+    ui.text(ui.fit(title, f.subtitle, w - title_x - 164), title_x + slide, 15, f.subtitle, colors.text)
     ui.button_hint("{back} — Back", w - 140, 18, f.tiny, colors.muted)
 
     local max_visible, item_h, row_h = self:row_layout(h)
     local start_y = START_Y
-    local content_h = h - start_y - FOOTER_HEIGHT
+    local preview = self:shows_wallpaper_preview()
+    local content_h = h - start_y - FOOTER_HEIGHT - (preview and PREVIEW_HEIGHT or 0)
 
     self:clamp_scroll(#items, max_visible)
 
     local first_visible = self.scroll_offset + 1
     local last_visible = math.min(#items, self.scroll_offset + max_visible)
 
+    if slide ~= 0 then
+        love.graphics.push()
+        love.graphics.translate(slide, 0)
+    end
     for idx = first_visible, last_visible do
         local item = items[idx]
         local display_idx = idx - self.scroll_offset
         local y = start_y + (display_idx - 1) * row_h
         local selected = self.selected_item == idx
-        local lift
+        local lift, inset
         if selected then
-            local now = love.timer.getTime()
-            if self.animated_item ~= idx then self.animated_item, self.focus_at = idx, now end
-            lift = ui.focus_lift(now - self.focus_at)
+            self.focus_motion = self.focus_motion or {}
+            lift = ui.navigation_lift(self.focus_motion, idx, now)
+            if self.pressed_index == idx and self.pressed_section == self.section then
+                inset = ui.press_inset(now - self.pressed_at)
+            end
+            y = y - math.floor(lift / 2)
         end
         local label, value, arrow, sample = row_content(self, item, active_key)
         ui.settings_row(f.normal, y, item_h, {
             label = label, value = value, arrow = arrow, selected = selected, lift = lift,
+            disabled = item.disabled, inset = inset,
             value_font = value == "Aa 09" and sample or nil,
             icon = item.section and item.section.icon or ROW_ICONS[item.account and "account" or item.id],
             danger = (item.id == "exit_app" and self.quit_confirm) or (item.id == "logout" and self.logout_confirm),
         })
     end
+    if slide ~= 0 then love.graphics.pop() end
 
     local status = self.tg.action_error ~= "" and self.tg.action_error or self.tg.action_status
-    if status and status ~= "" then
+    if not preview and status and status ~= "" then
         local status_y = start_y + (last_visible - first_visible + 1) * row_h + 10
         ui.text(ui.fit(status, f.tiny, w - 80), 44, status_y, f.tiny,
             self.tg.action_error ~= "" and colors.red or colors.muted)
     end
 
+    if preview then
+        local preview_y, preview_w = h - FOOTER_HEIGHT - PREVIEW_HEIGHT + 8, w - 80
+        ui.retro_panel(40, preview_y, preview_w, 70, colors.bg, colors.accent_dark)
+        self.callbacks.draw_wallpaper_preview(43, preview_y + 3, preview_w - 6, 64)
+        ui.rect(49, preview_y + 47, f.tiny:getWidth("Preview") + 12, f.tiny:getHeight() + 4, colors.header, 3)
+        ui.text("Preview", 55, preview_y + 49, f.tiny, colors.text)
+    end
     local hint_y = h - 30
     ui.button_hint("D-pad — Move or adjust   {confirm} — Select   {back} — Back", 24, hint_y, f.tiny, colors.muted)
     if self.version then
@@ -440,22 +482,26 @@ function settings_screen:close_keyboard_languages()
 end
 
 function settings_screen:activate_item(item)
-    if not item then return end
+    if not item or item.disabled then return end
+    self.pressed_index, self.pressed_section, self.pressed_at = self.selected_item, self.section, love.timer.getTime()
     if item.section then
         self.section_parent = {section = self.section, parent = self.section_parent,
             selection = self.selected_item, offset = self.scroll_offset}
         self.section = item.section
+        self.section_motion_at, self.section_motion_distance, self.focus_motion = self.pressed_at, 16, nil
         self.selected_item, self.scroll_offset = 1, 0
-        self.animated_item = nil
-        if self.section == RETROSCROLL_SECTION then
+        if self.section == RETROSCROLL_SELECT then
             self.retroscroll_items = {{id = "background_off"}}
             for _, tile in ipairs(media_settings.retroscroll_tiles()) do
                 self.retroscroll_items[#self.retroscroll_items + 1] = {
                     id = "retroscroll_tile", tile = tile, label = (tile:gsub("%.[^.]+$", "")),
                 }
             end
-            self.retroscroll_items[#self.retroscroll_items + 1] = {id = "retroscroll_color", effect = "color"}
-            self.retroscroll_items[#self.retroscroll_items + 1] = {id = "retroscroll_motion", effect = "motion"}
+        elseif self.section.effect then
+            local active = media_settings.retroscroll_effect(self.section.effect)
+            for index, item in ipairs(self:items()) do
+                if item.option[1] == active then self.selected_item = index; break end
+            end
         end
     elseif item.id == "exit_app" then
         if self.quit_confirm then
@@ -521,7 +567,7 @@ function settings_screen:activate_item(item)
     elseif item.id == "message_sound" or item.id == "startup_intro" then
         media_settings.toggle(item.id)
     elseif item.effect then
-        media_settings.cycle_retroscroll_effect(item.effect, 1)
+        media_settings.set_retroscroll_effect(item.effect, item.option[1])
     elseif item.tile then
         media_settings.set_chat_background("retroscroll", item.tile)
     elseif BACKGROUND_MODES[item.id] then
@@ -557,11 +603,6 @@ function settings_screen:activate_item(item)
             self.tg.action_status = "Vibration sent"
         else
             self.tg.action_error = "Vibration unavailable"
-        end
-    elseif item.id == "minimize" then
-        if love.window and love.window.minimize then
-            love.window.minimize()
-            self.tg.action_status = "App minimized"
         end
     elseif item.id == "abxy" then
         self:toggle_abxy()
@@ -625,9 +666,12 @@ function settings_screen:keypressed(key)
         if self.logout_confirm then self.logout_confirm = false; return end
         if self.section then
             local previous = self.section_parent
+            if self.section == RETROSCROLL_SECTION and self.callbacks.release_wallpaper_preview then
+                self.callbacks.release_wallpaper_preview()
+            end
             self.section, self.section_parent = previous.section, previous.parent
+            self.section_motion_at, self.section_motion_distance, self.focus_motion = love.timer.getTime(), -12, nil
             self.selected_item, self.scroll_offset = previous.selection, previous.offset
-            self.animated_item = nil
             return
         end
         return "back"
@@ -647,8 +691,6 @@ function settings_screen:keypressed(key)
         if id == "scale" then
             local direction = key == "right" and 0.1 or -0.1
             self.scale = math.max(0.7, math.min(2.0, self.scale + direction))
-        elseif selected and selected.effect then
-            media_settings.cycle_retroscroll_effect(selected.effect, key == "right" and 1 or -1)
         elseif self.section == PERFORMANCE_SECTION or id == "abxy" or id == "show_mouse" then
             self:activate_item(selected)
         end

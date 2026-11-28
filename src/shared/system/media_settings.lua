@@ -5,34 +5,32 @@ local backgrounds = {off = true, static = true, retroscroll = true}
 local background, retroscroll_tile
 local tile_directory = "effects/retroscroll/themes/"
 local default_tile = "wavelenght-tg.png"
-local color_index, motion_index = 1, 1
-local color_effects = {
-    {"original", "Original"}, {"gradient", "Gradient"}, {"two_tone", "Two-tone fade"},
-    {"palette", "Palette steps"},
-}
-local motion_effects = {
-    {"diagonal", "Diagonal"}, {"sway", "Sway"}, {"ripple", "Ripple"}, {"orbit", "Orbit"},
+local effect_selection = {color = 1, motion = 1}
+local effect_options = {
+    color = {{"original", "Original"}, {"gradient", "Gradient"}, {"two_tone", "Two-tone fade"},
+        {"palette", "Palette steps"}},
+    motion = {{"diagonal", "Diagonal"}, {"sway", "Sway"}, {"ripple", "Ripple"}, {"orbit", "Orbit"}},
 }
 
 function media_settings.retroscroll_effect(kind)
-    local effect = kind == "color" and color_effects[color_index] or motion_effects[motion_index]
-    return effect[1], effect[2]
+    return effect_options[kind][effect_selection[kind]][1]
 end
 
-function media_settings.cycle_retroscroll_effect(kind, direction)
-    if kind == "color" then
-        color_index = (color_index - 1 + direction) % #color_effects + 1
-    else
-        motion_index = (motion_index - 1 + direction) % #motion_effects + 1
-    end
-    media_settings.save()
+function media_settings.retroscroll_effect_options(kind)
+    return effect_options[kind]
 end
 
 local function effect_index(options, value)
     for index, effect in ipairs(options) do
         if effect[1] == value then return index end
     end
-    return 1
+end
+
+function media_settings.set_retroscroll_effect(kind, value)
+    local index = effect_options[kind] and effect_index(effect_options[kind], value)
+    if not index then return end
+    effect_selection[kind] = index
+    media_settings.save()
 end
 
 local function valid_tile(name)
@@ -162,8 +160,9 @@ function media_settings.load()
         retroscroll_tile = valid_tile(tile) and tile or nil
         local color = data:match("retroscroll_color[ \t]*=[ \t]*([%w_]+)")
         if not color and data:match("retroscroll_gradient%s*=%s*1") then color = "gradient" end
-        color_index = effect_index(color_effects, color)
-        motion_index = effect_index(motion_effects, data:match("retroscroll_motion[ \t]*=[ \t]*([%w_]+)"))
+        effect_selection.color = effect_index(effect_options.color, color) or 1
+        local motion = data:match("retroscroll_motion[ \t]*=[ \t]*([%w_]+)")
+        effect_selection.motion = effect_index(effect_options.motion, motion) or 1
     end
     if not background then
         local legacy = io.open("wallpaper.conf", "r")

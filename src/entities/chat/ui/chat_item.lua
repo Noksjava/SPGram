@@ -112,10 +112,10 @@ function chat_item.draw(self, chat, x, y, w, h, fonts, colors, is_selected, is_c
     if unread > 0 then
         local badge = tostring(unread)
         local badge_w = math.max(22, fonts.tiny:getWidth(badge) + 12)
-        local badge_y = y + 52
+        local badge_y = y + 52 - math.max(0, pulse)
         local badge_color = muted and ui.notification_gray or colors.accent
-        ui.retro_panel(x + w - 16 - badge_w, badge_y, badge_w, 18, badge_color, badge_color)
-        if pulse > 0 then ui.rect(x + w - 16 - badge_w, badge_y - 2, badge_w, 1, badge_color) end
+        ui.retro_panel(x + w - 16 - badge_w - math.max(0, pulse), badge_y,
+            badge_w + math.max(0, pulse), 18, badge_color, badge_color)
         ui.printf(badge, x + w - 16 - badge_w, badge_y + 2, badge_w, "center", fonts.tiny,
             ui.contrasting_text(badge_color))
     end

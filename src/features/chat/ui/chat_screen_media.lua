@@ -16,7 +16,7 @@ return function(messenger_screen)
         end
     end
 
-    function messenger_screen:album_layout(messages, max_bubble, padding)
+    function messenger_screen:album_layout(messages, max_bubble, padding, post_width)
         local columns, gap = math.min(3, #messages), 4
         local cell = math.floor((max_bubble - padding * 2 - gap * (columns - 1)) / columns)
         local cell_h = cell
@@ -26,10 +26,18 @@ return function(messenger_screen)
         local rows = math.ceil(#messages / columns)
         local width = columns * cell + (columns - 1) * gap
         local caption = helpers.album_caption(messages)
-        local lines = caption and helpers.wrapped_lines(self.fonts.normal, caption.text, width) or {}
+        local font = self.fonts.normal
+        local caption_limit = math.max(width, post_width or 0)
+        local lines = caption and helpers.wrapped_lines(font, caption.text, caption_limit) or {}
+        local content_width = width
+        if caption_limit > width then
+            for _, line in ipairs(lines) do content_width = math.max(content_width, font:getWidth(line)) end
+            content_width = math.min(content_width, caption_limit)
+        end
         return {columns = columns, gap = gap, cell = cell, cell_h = cell_h, w = width,
+            content_width = content_width, card_limit = math.max(max_bubble, caption_limit + padding * 2),
             h = rows * cell_h + (rows - 1) * gap, caption = caption, lines = lines,
-            caption_h = #lines > 0 and (#lines * self.fonts.normal:getHeight() + 6) or 0}
+            caption_h = #lines > 0 and (#lines * font:getHeight() + 6) or 0}
     end
 
     function messenger_screen:draw_album(messages, area_x, y, area_w, height, max_bubble, padding, small_height, colors, item)
@@ -37,11 +45,11 @@ return function(messenger_screen)
         local outgoing = self:outgoing(first)
         local media = item and item.album_layout or self:album_layout(messages, max_bubble, padding)
         local grid_w, grid_h = media.w, media.h
-        local bubble_w = grid_w + padding * 2
+        local bubble_w = media.content_width + padding * 2
         local reactions = item and item.reaction_rows or helpers.reaction_rows(
-            helpers.merge_message_reactions(messages), self.fonts.tiny, max_bubble - padding * 2
+            helpers.merge_message_reactions(messages), self.fonts.tiny, media.card_limit - padding * 2
         )
-        bubble_w = math.min(max_bubble, math.max(
+        bubble_w = math.min(media.card_limit, math.max(
             bubble_w, helpers.reaction_rows_width(reactions) + padding * 2
         ))
         local x = outgoing and (area_x + area_w - bubble_w - 18) or (area_x + 28)

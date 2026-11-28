@@ -263,6 +263,22 @@ function ui.focus_lift(age)
     return math.floor(math.sin(progress * math.pi * 1.8) * (1 - progress) * 7 + 0.5)
 end
 
+function ui.navigation_lift(focus, item, now)
+    if ui.navigation_repeating then
+        focus.item, focus.repeating = item, true
+        return 0
+    end
+    if focus.item ~= item or focus.repeating or not focus.at then
+        focus.item, focus.at, focus.repeating = item, now, false
+    end
+    return math.max(0, ui.focus_lift(now - focus.at))
+end
+
+function ui.panel_slide(age, duration, distance)
+    local t = 1 - ui.motion_progress(age, duration)
+    return math.floor(distance * t * t * (2.35 * t - 1.35) + 0.5)
+end
+
 function ui.focus_corners(x, y, w, h, color, lift)
     local edge = math.min(math.max(4, 8 + (lift or 0)), math.max(4, math.floor(math.min(w, h) / 2)))
     for _, px in ipairs({x, x + w - edge}) do
@@ -327,12 +343,13 @@ function ui.contrasting_text(background)
     return luminance >= 0.179 and {0, 0, 0} or ui.colors.white
 end
 
-function ui.pixel_icon(icon, x, y, color)
+function ui.pixel_icon(icon, x, y, color, size)
     if not icon then return end
+    size = size or 3
     for row, pixels in ipairs(icon) do
         for column = 1, #pixels do
             if pixels:sub(column, column) == "1" then
-                ui.rect(x + (column - 1) * 3, y + (row - 1) * 3, 3, 3, color)
+                ui.rect(x + (column - 1) * size, y + (row - 1) * size, size, size, color)
             end
         end
     end
@@ -344,8 +361,9 @@ end
 
 function ui.settings_row(font, y, height, row)
     local w, colors = ui.width(), ui.colors
-    local bg = row.selected and (row.danger and colors.red or colors.accent) or colors.panel_alt
-    local ink = row.selected and ui.contrasting_text(bg) or colors.text
+    local highlighted = row.selected and not row.disabled
+    local bg = highlighted and (row.danger and colors.red or colors.accent) or colors.panel_alt
+    local ink = row.disabled and colors.muted or highlighted and ui.contrasting_text(bg) or colors.text
     local icon_y = y + math.floor((height - 21) / 2)
     local text_y = y + math.floor((height - font:getHeight()) / 2)
     local right = w - 58
@@ -358,11 +376,13 @@ function ui.settings_row(font, y, height, row)
     elseif row.arrow then
         right = right - 14
     end
-    ui.retro_panel(40, y, w - 80, height, bg, row.selected and colors.accent_dark or colors.header)
+    ui.retro_panel(40, y, w - 80, height, bg, highlighted and colors.accent_dark or colors.header)
     if row.selected then
-        ui.focus_corners(41, y + 1, w - 82, height - 2, colors.accent, row.lift)
+        local inset = row.inset or 0
+        ui.focus_corners(41 + inset, y + 1 + inset, w - 82 - 2 * inset, height - 2 - 2 * inset,
+            row.disabled and colors.muted or colors.accent, row.lift)
     end
-    ui.pixel_icon(row.icon, 56, icon_y, row.selected and ink or colors.accent)
+    ui.pixel_icon(row.icon, 56, icon_y, (row.disabled or highlighted) and ink or colors.accent)
     ui.text(ui.fit(row.label, font, math.max(1, right - 102)), 90, text_y, font, ink)
     if value then
         ui.text(value, right, y + math.floor((height - value_font:getHeight()) / 2), value_font, ink)

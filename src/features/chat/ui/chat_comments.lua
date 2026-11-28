@@ -386,7 +386,11 @@ return function(screen)
                 local selected = not thread.compose_selected and message.id == thread.focus_id
                 ui.retro_panel(x + 12, top, width - 28, row.h,
                     selected and colors.accent_dark or colors.panel_alt, colors.header)
-                if selected then ui.focus_corners(x + 13, top + 1, width - 30, row.h - 2, colors.accent) end
+                if selected then
+                    thread.focus_motion = thread.focus_motion or {}
+                    local lift = ui.navigation_lift(thread.focus_motion, message.id, love.timer.getTime())
+                    ui.focus_corners(x + 13, top + 1, width - 30, row.h - 2, colors.accent, lift)
+                end
                 local author = self.tg:sender_name(message)
                 draw_comment_avatar(self.tg, message, author, x + 21, top + 5, f, colors)
                 local tx = x + 53

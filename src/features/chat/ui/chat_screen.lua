@@ -1,5 +1,6 @@
 
 local ui = require("src.shared.ui.ui_kit")
+local pixel_effects = require("src.shared.ui.pixel_effects")
 local chat_model = require("src.features.chat.model.chat_model")
 local chat_item = require("src.entities.chat.ui.chat_item")
 local virtual_keyboard = require("src.shared.ui.virtual_keyboard")
@@ -13,6 +14,7 @@ local INPUT_HEIGHT = 72
 local FOOTER_HEIGHT = 24
 local ITEM_HEIGHT = 76
 local NAV_ITEM_HEIGHT = math.floor(ITEM_HEIGHT / 3)
+local PIN_ICON = {"0011100", "0011100", "0001000", "0011100", "0111110", "0001000", "0001000"}
 
 local function row_height(chat)
     return chat.navigation and NAV_ITEM_HEIGHT or ITEM_HEIGHT
@@ -107,6 +109,7 @@ function messenger_screen.new(fonts, tg)
     self.composer_focus = nil
     self.selected_messages = {}
     self.cursor_highlight_timer = 0
+    self.unread_sweep, self.conversation_edge_at = nil, nil
     self.nav_messages = {}
     self.nav_pos = {}
     self.conv_area_x = nil
@@ -150,6 +153,7 @@ function messenger_screen:select_chat(chat_id, history_loaded)
     self.display_cursor_id = nil
     self.composer_focus = nil
     self.cursor_highlight_timer = 0
+    self.unread_sweep, self.conversation_edge_at, self.message_focus_motion = nil, nil, nil
     self.nav_messages = {}
     self.nav_pos = {}
     if self.search_active and self.search_query ~= "" then
@@ -589,6 +593,11 @@ function messenger_screen:draw()
     self.read_jump_hit = nil
     if not chat then self.cached_conversation_layout = nil end
     local forum = self.tg.forum
+    local view_id = forum and forum.active or chat and chat.id or false
+    if self.conversation_motion_id ~= view_id then
+        self.conversation_motion_at = love.timer.getTime()
+        self.conversation_motion_id = view_id
+    end
     if chat and forum and not forum.active then
         self:draw_forum_topics(chat, forum, left_width, right_width, h, background)
     elseif chat then
@@ -596,12 +605,19 @@ function messenger_screen:draw()
     else
         if not background then ui.rect(left_width, HEADER_HEIGHT, right_width, h - HEADER_HEIGHT, colors.bg) end
         local panel_w = math.min(270, right_width - 32)
-        local panel_x, panel_y = left_width + (right_width - panel_w) / 2, math.floor(h / 2) - 66
+        local slide = ui.panel_slide(love.timer.getTime() - self.conversation_motion_at, 0.24, -18)
+        local panel_x, panel_y = left_width + (right_width - panel_w) / 2 + slide, math.floor(h / 2) - 66
         ui.retro_panel(panel_x, panel_y, panel_w, 126, colors.panel, colors.accent_dark)
-        ui.pixel_chat(left_width + math.floor(right_width / 2) - 16, panel_y + 18, 4, colors.accent)
+        ui.pixel_chat(left_width + math.floor(right_width / 2) - 16 + slide, panel_y + 18, 4, colors.accent)
         ui.printf("Choose a chat", panel_x, panel_y + 63, panel_w, "center", f.subtitle, colors.text)
         ui.button_hint("{confirm} — Open   {options} — Options",
             panel_x + 10, panel_y + 94, f.small, colors.muted, panel_w - 20)
+    end
+    local transition = ui.motion_progress(love.timer.getTime() - self.conversation_motion_at, 0.24)
+    if transition < 1 then
+        local slide = ui.panel_slide(transition * 0.24, 0.24, 12)
+        ui.rect(left_width + math.max(0, slide), HEADER_HEIGHT + 8, 2, CHAT_HEADER_HEIGHT - 16,
+            alpha_color(colors.accent, (1 - transition) * 0.8))
     end
     if not self.tg.comments_thread and not self.text_preview and not self.fullscreen_media then
         self:draw_delete_effect(love.timer.getTime())
@@ -632,6 +648,7 @@ function messenger_screen:draw()
             and "Read" or "Open"
         if self:is_video_post(message, chat) and self:has_post_details(message) then action = "Read post"
         elseif self.tg:video_kind(message) or kind == "messageAudio" or kind == "messageVoiceNote" then action = "Play" end
+        if self.tg:can_retry_message(message) then action = "Retry" end
         local comment = self:focused_comment_target()
         hint = "{confirm} — " .. (self.nav_albums and message and self.nav_albums[message.id] and "Post" or action)
             .. "   {options} — Options" .. (comment and "   {search} — Comments" or "")
@@ -838,7 +855,7 @@ function messenger_screen:draw_reader_transition(w, h, preview, thread)
             motion = {preview = preview, thread = thread, chat_id = chat_id, at = now}
             self.reader_motion = motion
         end
-        local t = ui.motion_progress(now - motion.at, 0.20)
+        local t = ui.motion_progress(now - motion.at, 0.22)
         motion.presence = 1 - (1 - t) ^ 3
     elseif motion and motion.thread == thread and motion.chat_id == chat_id then
         if not motion.closing then
@@ -851,11 +868,12 @@ function messenger_screen:draw_reader_transition(w, h, preview, thread)
         self.reader_motion = nil
         return
     end
-    local offset = math.floor(14 * (1 - motion.presence) + 0.5)
-    self:draw_text_preview(w, h, motion.preview, offset, motion.presence)
+    local age = motion.closing and 1 or now - motion.at
+    local offset = motion.closing and math.floor(14 * (1 - motion.presence) + 0.5) or ui.panel_slide(age, 0.22, 18)
+    self:draw_text_preview(w, h, motion.preview, offset, motion.presence, age)
 end
 
-function messenger_screen:draw_reader_speaker(message, label, name, x, y, width, height, post)
+function messenger_screen:draw_reader_speaker(message, label, name, x, y, width, height, post, age)
     local f, colors = self.fonts, ui.colors
     local sender = message.sender_id or {}
     local image
@@ -865,7 +883,7 @@ function messenger_screen:draw_reader_speaker(message, label, name, x, y, width,
         image = self.tg:chat_photo_image(sender.chat_id or message.chat_id)
     end
     local size = 44
-    local portrait_y = y + math.floor((height - size) / 2)
+    local portrait_y = y + math.floor((height - size) / 2) - ui.panel_slide(age, 0.20, 10)
     ui.retro_panel(x, portrait_y, size, size, colors.header, colors.accent)
     if image then
         local w, h = image:getWidth(), image:getHeight()
@@ -876,7 +894,7 @@ function messenger_screen:draw_reader_speaker(message, label, name, x, y, width,
         ui.printf(ui.first_char(name), x, portrait_y + (size - f.subtitle:getHeight()) / 2,
             size, "center", f.subtitle, colors.accent)
     end
-    local name_x = x + size + 10
+    local name_x = x + size + 10 + ui.panel_slide(age - 0.035, 0.18, 12)
     local name_w = width - size - 26
     local label_y = y + math.floor((height - f.small:getHeight() - f.subtitle:getHeight() - 4) / 2)
     local name_y = label_y + f.small:getHeight() + 4
@@ -887,7 +905,7 @@ function messenger_screen:draw_reader_speaker(message, label, name, x, y, width,
     ui.text(fitted, name_x + 8, name_y, f.subtitle, colors.accent)
 end
 
-function messenger_screen:draw_text_preview(w, h, preview, offset, presence)
+function messenger_screen:draw_text_preview(w, h, preview, offset, presence, age)
     local tp = preview or self.text_preview
     if not tp or self.fullscreen_media then return end
     local f = self.fonts
@@ -907,7 +925,8 @@ function messenger_screen:draw_text_preview(w, h, preview, offset, presence)
         local speaker_h = math.max(44, f.small:getHeight() + f.subtitle:getHeight() + 4)
         local label = tp.post_message and "Post by" or tp.comment_thread and "Comment by" or "Message from"
         local name = tp.post_message and self.tg:post_title(author) or self.tg:sender_name(author)
-        self:draw_reader_speaker(author, label, name, panel_x + 14, panel_y + 10, panel_w - 28, speaker_h, tp.post_message)
+        self:draw_reader_speaker(author, label, name, panel_x + 14, panel_y + 10, panel_w - 40,
+            speaker_h, tp.post_message, age or 1)
         content_top = speaker_h + 28
         ui.retro_panel(panel_x + 12, panel_y + content_top - 6, panel_w - 24,
             panel_h - content_top - 22, colors.panel_alt, colors.accent_dark)
@@ -1129,8 +1148,9 @@ function messenger_screen:draw_text_preview(w, h, preview, offset, presence)
         hint = "{back} — Close"
     end
     if not tp.link_index and not tp.quote_jump then
-        if self.tg:receipt_chat(tp.receipt_message or tp.author_message) then hint = "{options} — Options   " .. hint
-        elseif tp.link_rows then hint = "{options} — Links   " .. hint end
+        if tp.author_message or self.tg:receipt_chat(tp.receipt_message) then
+            hint = "{options} — Options   " .. hint
+        end
     end
     ui.button_hint(hint, left, footer_y, f.tiny, colors.muted, width)
     if tp.max_scroll > 0 then
@@ -1486,7 +1506,7 @@ function messenger_screen:draw_notifications(f, colors, w, h)
         local age = now - (notice.created or now)
         if age >= 0 and age < 6 then
             local motion_age = now - (notice.motion_started or notice.created or now)
-            local slide = math.floor((1 - ui.motion_progress(motion_age, 0.20)) ^ 3 * 12)
+            local slide = ui.panel_slide(motion_age, 0.26, 24)
             local y = bottom - box_h + slide
             local title = self.tg:notification_title(notice)
             ui.retro_panel(x, y, box_w, box_h, colors.panel, colors.accent_dark)
@@ -1501,9 +1521,16 @@ function messenger_screen:draw_notifications(f, colors, w, h)
                 ui.rect(x + 12, y + 11, 40, 40, colors.accent_dark, 6)
                 ui.printf(ui.first_char(title), x + 12, y + 18, 40, "center", f.subtitle, colors.green)
             end
-            ui.text(ui.fit(title, f.subtitle, box_w - 78), x + 64, y + 9, f.subtitle, colors.green)
+            local count = notice.count and (notice.count > 99 and "99+" or tostring(notice.count))
+            local count_w = count and f.tiny:getWidth(count) + 14 or 0
+            ui.text(ui.fit(title, f.subtitle, box_w - 78 - count_w), x + 64, y + 9, f.subtitle, colors.green)
+            if count then
+                ui.retro_panel(x + box_w - count_w - 7, y + 8, count_w, f.tiny:getHeight() + 4, colors.header, colors.accent_dark)
+                ui.printf(count, x + box_w - count_w - 7, y + 10, count_w, "center", f.tiny, colors.green)
+            end
             ui.text(ui.fit(notice.text or "", f.small, box_w - 78), x + 64, y + 34, f.small, colors.text)
             ui.rect(x + 4, y + box_h - 2, math.floor((box_w - 8) * (1 - age / 6)), 2, colors.green)
+            pixel_effects.notification_scan(x, y, box_w, motion_age, colors)
             bottom = bottom - box_h - 6
         end
     end
@@ -1966,12 +1993,15 @@ function messenger_screen:conversation_option_labels(chat)
     return "Chat options", "Chat info", conversation_icons.chat
 end
 
-function messenger_screen:context_menu_items(message)
+function messenger_screen:context_menu_items(message, reader)
     local chat = self.model:current_chat()
     local label, _, icon = self:conversation_option_labels(chat)
     local action = chat and {label = label, action = "conversation_options", chat = chat, icon = icon}
         or {label = "Search messages", action = "search"}
     local items = {action}
+    if self.tg:can_retry_message(message) then
+        items[#items + 1] = {label = "Retry", action = "retry_message"}
+    end
     local selection = self.selected_messages or {}
     if message then
         items[#items + 1] = {label = selection[message.id] and "Deselect message" or "Select message",
@@ -2022,7 +2052,10 @@ function messenger_screen:context_menu_items(message)
         end
     end
     local has_reply = self.tg:message_reply(message) or (album and helpers.album_reply(self.tg, album))
-    if msg_text:find("%S") or comment or has_reply or album then
+    if reader and reader.link_rows then
+        items[#items + 1] = {label = "Select a link", action = "reader_links"}
+    end
+    if not reader and (msg_text:find("%S") or comment or has_reply or album) then
         local is_post = message.is_channel_post or (chat and chat.type and chat.type.is_channel)
         local label = comment and "Examine post" or (has_reply and "Read reply"
             or (content_type ~= "messageText" and is_post and "Read post" or "Read message"))
@@ -2243,16 +2276,22 @@ function messenger_screen:retroscroll_effect_shader(color, motion, now)
     return shader
 end
 
-function messenger_screen:draw_chat_background(x, y, width, height, now)
-    local mode = media_settings.chat_background()
+function messenger_screen:release_chat_background()
     local background = self.chat_background
-    local tile = mode ~= "off" and media_settings.background_tile() or nil
+    if background then
+        if background.batch then background.batch:release() end
+        background.image:release()
+    end
+    self.chat_background, self.chat_background_tile = nil, nil
+end
+
+function messenger_screen:draw_chat_background(x, y, width, height, now, preview)
+    local mode = preview and "retroscroll" or media_settings.chat_background()
+    local background = self.chat_background
+    local tile = preview and media_settings.retroscroll_tile() or (mode ~= "off" and media_settings.background_tile() or nil)
     if tile ~= self.chat_background_tile or not tile then
-        if background then
-            if background.batch then background.batch:release() end
-            background.image:release()
-        end
-        self.chat_background, self.chat_background_tile, background = nil, tile, nil
+        self:release_chat_background()
+        self.chat_background_tile, background = tile, nil
     end
     if not tile or width <= 0 or height <= 0 then return false end
     if background == nil then
@@ -2298,8 +2337,14 @@ function messenger_screen:draw_chat_background(x, y, width, height, now)
         end
         shader = self:retroscroll_effect_shader(media_settings.retroscroll_effect("color"), motion, now)
     end
-    love.graphics.setScissor(x, y, width, height)
-    ui.set_color(ui.colors.white, 0.28)
+    if preview then
+        love.graphics.push("all")
+        local clip_x, clip_y = love.graphics.transformPoint(x, y)
+        love.graphics.intersectScissor(math.floor(clip_x), math.floor(clip_y), width, height)
+    else
+        love.graphics.setScissor(x, y, width, height)
+    end
+    ui.set_color(ui.colors.white, preview and 0.70 or 0.28)
     if shader then love.graphics.setShader(shader) end
     if motion == "sway" then
         love.graphics.draw(background.batch, x + width / 2, y + height / 2, angle, 1, 1,
@@ -2307,8 +2352,12 @@ function messenger_screen:draw_chat_background(x, y, width, height, now)
     else
         love.graphics.draw(background.batch, x - dx, y - dy)
     end
-    if shader then love.graphics.setShader() end
-    love.graphics.setScissor()
+    if preview then
+        love.graphics.pop()
+    else
+        if shader then love.graphics.setShader() end
+        love.graphics.setScissor()
+    end
     ui.set_color(ui.colors.white)
     return true
 end
@@ -2369,14 +2418,15 @@ function messenger_screen:draw_chat_list(left_width, h, background)
     local now = love.timer.getTime()
     local selected_row = chat_list[self.model.selected]
     local focus_key = selected_row and (selected_row.navigation or selected_row.id)
-    if self.list_focus ~= focus_key then self.list_focus, self.list_focus_time = focus_key, now end
-    local lift = ui.focus_lift(now - (self.list_focus_time or now))
+    self.list_focus_motion = self.list_focus_motion or {}
+    local lift = ui.navigation_lift(self.list_focus_motion, focus_key, now)
     self.list_focus_lift = lift
     love.graphics.setScissor(0, HEADER_HEIGHT, left_width, list_h)
     for _, row in ipairs(self.chat_list_rows) do
         local chat, index, y, rh = row.chat, row.index, row.y, row.height
         local is_selected = not self.header_focus and index == self.model.selected
         local is_current = self.tg.current_chat_id == chat.id
+        if is_selected then y = y - math.floor(lift / 2) end
 
         if chat.navigation then
 
@@ -2398,7 +2448,7 @@ function messenger_screen:draw_chat_list(left_width, h, background)
             chat_item.draw(self, chat, 0, y, left_width, ITEM_HEIGHT, f, colors, is_selected, is_current)
 
             if self.tg:chat_is_pinned(chat, self:chat_list_for(chat)) then
-                ui.text("📌", left_width - 22, y + 4, f.tiny, colors.muted)
+                ui.pixel_icon(PIN_ICON, left_width - 22, y + 6, is_selected and colors.accent or colors.muted, 2)
             end
         end
         if chat.sponsored_peer and y >= HEADER_HEIGHT and y + rh <= HEADER_HEIGHT + list_h
@@ -2410,9 +2460,18 @@ function messenger_screen:draw_chat_list(left_width, h, background)
         end
     end
     love.graphics.setScissor()
+    self:draw_edge_nudge(self.list_edge_at, 8, bottom - 4, left_width - 16, now)
 end
 
-local function measure_message(self, chat, message, max_bubble, padding, wrap_width)
+function messenger_screen:draw_edge_nudge(at, x, y, width, now)
+    local progress = at and ui.motion_progress(now - at, 0.22) or 1
+    if progress >= 1 then return end
+    local size = math.floor(math.min(width, 42) * (1 - progress) + 0.5)
+    ui.rect(x + math.floor((width - size) / 2), y - math.floor(math.sin(math.pi * progress) * 3 + 0.5),
+        size, 2, ui.colors.accent)
+end
+
+local function measure_message(self, chat, message, max_bubble, padding, wrap_width, post_width)
     local f = self.fonts
     local font, small_height = f.normal, f.small:getHeight()
     local line_height = font:getHeight()
@@ -2446,7 +2505,7 @@ local function measure_message(self, chat, message, max_bubble, padding, wrap_wi
         if not is_animation and not is_sticker then
             local photo_text = self:photo_caption(message)
             if photo_text ~= "" then
-                caption_height = #wrapped_lines(font, photo_text, image_width) * line_height + 4
+                caption_height = #wrapped_lines(font, photo_text, post_width or image_width) * line_height + 4
             end
         end
         height = padding * 2 + author_height + image_height + caption_height + small_height + 2
@@ -2465,7 +2524,8 @@ local function measure_message(self, chat, message, max_bubble, padding, wrap_wi
         local line_count = math.max(1, #lines)
         height = padding * 2 + author_height + line_count * line_height + small_height + 2
     end
-    local reactions = helpers.reaction_rows(helpers.reaction_summary(message), f.tiny, max_bubble - padding * 2)
+    local reaction_width = math.max(max_bubble - padding * 2, post_width or 0)
+    local reactions = helpers.reaction_rows(helpers.reaction_summary(message), f.tiny, reaction_width)
     height = height + helpers.reaction_rows_height(reactions)
     if helpers.comment_count(chat, message) then height = height + 27 end
     local download_state = not is_animation and self.tg:media_download_state(message)
@@ -2500,19 +2560,20 @@ local function sponsored_height(text, font, width)
     return 78 + math.max(1, #lines) * font:getHeight()
 end
 
-function messenger_screen:conversation_layout(chat, messages, sponsored, bot, width, max_bubble, padding, wrap_width, unread_id)
+function messenger_screen:conversation_layout(chat, messages, sponsored, bot, width, max_bubble, padding, wrap_width, unread_id, post_width)
     local f = self.fonts
     local me = self.tg.me and self.tg.me.id
     local channel = chat.type and chat.type["@type"] == "chatTypeSupergroup" and chat.type.is_channel
     local year = os.date("%Y")
     local layout = self.cached_conversation_layout
     if not layout or layout.chat ~= chat.id or layout.messages ~= messages or layout.sponsors ~= sponsored
-        or layout.bot ~= bot or layout.width ~= width or layout.me ~= me or layout.channel ~= channel or layout.unread_id ~= unread_id
+        or layout.bot ~= bot or layout.width ~= width or layout.post_width ~= post_width or layout.me ~= me
+        or layout.channel ~= channel or layout.unread_id ~= unread_id
         or layout.year ~= year or layout.normal ~= f.normal or layout.small ~= f.small
         or layout.tiny ~= f.tiny or layout.subtitle ~= f.subtitle or not matches_history(layout.snapshot, messages) then
         local items = conversation_items(messages, unread_id)
         if not bot then items = sponsors.spaced_items(items, sponsored) end
-        layout = {chat = chat.id, messages = messages, sponsors = sponsored, bot = bot, width = width,
+        layout = {chat = chat.id, messages = messages, sponsors = sponsored, bot = bot, width = width, post_width = post_width,
             channel = channel, unread_id = unread_id, me = me, year = year, normal = f.normal, small = f.small, tiny = f.tiny,
             subtitle = f.subtitle, items = items, heights = {}, snapshot = {}, total_height = 0}
         for index, message in ipairs(messages) do
@@ -2534,7 +2595,7 @@ function messenger_screen:conversation_layout(chat, messages, sponsored, bot, wi
             elseif item.unread_divider then
                 height = f.tiny:getHeight() + 8
             elseif item.messages then
-                local media = self:album_layout(item.messages, max_bubble, padding)
+                local media = self:album_layout(item.messages, max_bubble, padding, post_width)
                 local first = item.messages[1]
                 local author_height = self:outgoing(first) and 0 or small_height + 2
                 if first.forward_info then author_height = author_height + small_height + 2 end
@@ -2544,11 +2605,11 @@ function messenger_screen:conversation_layout(chat, messages, sponsored, bot, wi
                 height = padding * 2 + author_height + media.h + media.caption_h + small_height + 4
                 if helpers.album_comment_target(chat, item.messages) then height = height + 27 end
                 local reactions = helpers.reaction_rows(helpers.merge_message_reactions(item.messages),
-                    f.tiny, max_bubble - padding * 2)
+                    f.tiny, math.max(max_bubble - padding * 2, post_width or 0))
                 height = height + helpers.reaction_rows_height(reactions)
                 item.album_layout, item.reaction_rows = media, reactions
             else
-                height = measure_message(self, chat, item.message, max_bubble, padding, wrap_width)
+                height = measure_message(self, chat, item.message, max_bubble, padding, wrap_width, post_width)
             end
             layout.heights[i] = height
             layout.total_height = layout.total_height + (height or 0) + (item.channel_sponsor and 0 or 6)
@@ -2584,7 +2645,10 @@ function messenger_screen:draw_forum_topics(chat, forum, x, width, height, backg
     local y = HEADER_HEIGHT
     if not background then ui.rect(x, y, width, height - y, colors.bg) end
     ui.rect(x, y, width, CHAT_HEADER_HEIGHT, colors.header)
-    ui.text(ui.fit(chat.title or "Group", f.subtitle, width - 34), x + 16, y + 12, f.subtitle, colors.text)
+    local now = love.timer.getTime()
+    local slide = ui.panel_slide(now - (self.conversation_motion_at or -1), 0.24, 18)
+    ui.text(ui.fit(chat.title or "Group", f.subtitle, width - 34 - math.max(0, slide)),
+        x + 16 + slide, y + 12, f.subtitle, colors.text)
     ui.text("Topics", x + 16, y + 40, f.tiny, colors.accent)
     y = y + CHAT_HEADER_HEIGHT + 8
     local icon_size = 28
@@ -2599,6 +2663,11 @@ function messenger_screen:draw_forum_topics(chat, forum, x, width, height, backg
         local row_x, row_w = x + 12, width - 24
         ui.retro_panel(row_x, y, row_w, row_h, selected and colors.accent_dark or colors.panel,
             selected and colors.accent or colors.header)
+        if selected then
+            forum.focus_motion = forum.focus_motion or {}
+            local lift = ui.navigation_lift(forum.focus_motion, topic.info.forum_topic_id, now)
+            ui.focus_corners(row_x - 2, y - 1, row_w + 4, row_h + 2, colors.accent, lift)
+        end
         local unread = topic.unread_count or 0
         local badge = unread > 99 and "99+" or unread > 0 and tostring(unread) or ""
         local detail = topic.info.is_closed and "Closed" or topic.is_pinned and "Pinned" or ""
@@ -2634,6 +2703,7 @@ function messenger_screen:draw_forum_topics(chat, forum, x, width, height, backg
         or forum.token and "Loading topics…" or forum.error
         or (#forum.topics == 0 and "No topics found." or not forum.complete and "Scroll for more topics")
     if status then ui.text(status, x + 18, y + 2, f.tiny, forum.error and colors.red or colors.muted) end
+    self:draw_edge_nudge(forum.edge_at, x + 12, height - FOOTER_HEIGHT - 5, width - 24, now)
 end
 
 function messenger_screen:draw_conversation(chat, left_width, right_width, h, background)
@@ -2643,6 +2713,7 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h, ba
     local panel_w = right_width
 
     ui.rect(panel_x, HEADER_HEIGHT, panel_w, CHAT_HEADER_HEIGHT, colors.header)
+    local slide = ui.panel_slide(love.timer.getTime() - (self.conversation_motion_at or -1), 0.24, 18)
     local topic = self.tg.forum and self.tg.forum.active
     local profile_user_id = self.tg:private_chat_user_id(chat)
     if topic then
@@ -2661,7 +2732,8 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h, ba
     local badge = unread > 99 and "99+" or tostring(unread)
     local badge_w = unread > 0 and f.tiny:getWidth(badge) + 18 or 0
     local title = topic and topic.info.name or chat.title or "Chat"
-    ui.text(ui.fit(title, f.subtitle, panel_w - 52 - badge_w), panel_x + 20, HEADER_HEIGHT + 12, f.subtitle, colors.text)
+    ui.text(ui.fit(title, f.subtitle, panel_w - 52 - badge_w - math.max(0, slide)),
+        panel_x + 20 + slide, HEADER_HEIGHT + 12, f.subtitle, colors.text)
     if unread > 0 then
         local muted = self.tg:is_chat_muted(chat)
         local x = panel_x + panel_w - 28 - badge_w
@@ -2770,10 +2842,16 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h, ba
     local max_bubble = math.floor(area_w * 0.85)
 
     local wrap_width = math.min(max_bubble - padding * 2, 280)
+    local kind = chat.type and chat.type["@type"]
+    local post_width
+    if kind == "chatTypeSupergroup" or kind == "chatTypeBasicGroup" then
+        post_width = math.max(wrap_width, math.min(math.floor(wrap_width * 1.25), area_w - 28 - 26 - padding * 2))
+        wrap_width = post_width
+    end
     local line_height = font:getHeight()
     local small_height = small:getHeight()
     local unread_id = not self.search_active and history_state and history_state.unread_divider_id or nil
-    local layout, total = self:conversation_layout(chat, messages, sponsored, bot, area_w, max_bubble, padding, wrap_width, unread_id)
+    local layout, total = self:conversation_layout(chat, messages, sponsored, bot, area_w, max_bubble, padding, wrap_width, unread_id, post_width)
     local items, heights = layout.items, layout.heights
     local ad, text, tail = layout.tail_ad, layout.tail_text, layout.tail_height
     if tail ~= (self.sponsor_tail or 0) then
@@ -2809,7 +2887,13 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h, ba
                 local new_scroll = height_from_bottom - area_h
                 if focus_id then
                     local previous = items[i - 1]
-                    if previous and previous.unread_divider then new_scroll = new_scroll + heights[i - 1] + 6 end
+                    if previous and previous.unread_divider then
+                        new_scroll = new_scroll + heights[i - 1] + 6
+                    end
+                    local following = items[i + 1]
+                    if (previous and previous.unread_divider) or (following and following.unread_divider) then
+                        self.unread_sweep = {chat_id = chat.id, id = unread_id, at = now}
+                    end
                     self.message_cursor_id = messages[1].id
                     self.display_cursor_id = self.message_cursor_id
                     history_state.initial_focus_id = nil
@@ -2857,6 +2941,10 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h, ba
         draw_sponsor(ad, text, y, tail, self.sponsor_focus and not self.sponsor_inline)
     end
     local viewed = {}
+    local deleted = self.delete_effect
+    local settle = deleted and not deleted.thread and self:delete_effect_in_view(deleted)
+        and ui.panel_slide(now - deleted.started, 0.28, -12) or 0
+    local send_motion = self.tg.outgoing_motion
     self.message_hits = {}
     self.media_hits = {}
     self.profile_hits = {}
@@ -2888,6 +2976,20 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h, ba
                 ui.rect(center - half_label - line_w, line_y, line_w, 1, ink)
                 ui.rect(center + half_label, line_y, line_w, 1, ink)
                 ui.printf(label, area_x, y + 4, area_w, "center", f.tiny, ink)
+                if history_state and history_state.unread_sweep_pending then
+                    self.unread_sweep = {chat_id = chat.id, id = unread_id, at = now}
+                    history_state.unread_sweep_pending = nil
+                end
+                local sweep = self.unread_sweep
+                if sweep and sweep.chat_id == chat.id and sweep.id == unread_id then
+                    local progress = ui.motion_progress(now - sweep.at, 0.42)
+                    if progress < 1 then
+                        local size = math.floor(line_w * (1 - (1 - progress) ^ 3))
+                        local glow = alpha_color(colors.accent, 0.95 * (1 - progress))
+                        ui.rect(center - half_label - size, line_y, size, 2, glow)
+                        ui.rect(center + half_label, line_y, size, 2, glow)
+                    end
+                end
             end
         elseif item.date_label then
             local date_height = 28
@@ -2928,26 +3030,36 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h, ba
             for _, message in ipairs(item.messages or {item.message}) do
                 if media_settings.get("autoplay_images") then self.tg:ensure_photo(message) end
             end
+            local draw_y = y
+            if settle ~= 0 and y + height >= deleted.y - 32 and y + height <= deleted.y + deleted.h + 8 then
+                draw_y = draw_y + settle
+            end
+            local send_age
+            if nav_msg and send_motion and send_motion.chat_id == chat.id and send_motion.id == nav_msg.id then
+                send_age = now - send_motion.at
+                draw_y = draw_y + ui.panel_slide(send_age, 0.25, 22)
+            end
             local focus_x, focus_w = area_x + 2, area_w - 4
             if item.messages then
-                focus_x, focus_w = self:draw_album(item.messages, area_x, y, area_w, height, max_bubble, padding, small_height, colors, item)
+                focus_x, focus_w = self:draw_album(item.messages, area_x, draw_y, area_w, height, max_bubble, padding, small_height, colors, item)
             else
-                local hit = { message = item.message, x = area_x, y = y, w = area_w, h = height }
+                local hit = { message = item.message, x = area_x, y = draw_y, w = area_w, h = height }
                 table.insert(self.message_hits, hit)
-                self:draw_message(item.message, area_x, y, area_w, height, max_bubble, padding, wrap_width, small_height, line_height, colors, hit)
+                self:draw_message(item.message, area_x, draw_y, area_w, height, max_bubble, padding, wrap_width, small_height, line_height, colors, hit, post_width)
                 focus_x, focus_w = (hit.bubble_x or focus_x) - 2, (hit.bubble_w or focus_w) + 4
+            end
+            if send_age then
+                pixel_effects.message_launch(focus_x, draw_y, focus_w, height, send_age, colors)
             end
             if live_age and live_age >= 0 and live_age < 2.4 and nav_msg and live.id == nav_msg.id then
                 ui.rect(area_x + 5, y + 5, 3, math.min(26, height - 10), ping_color)
             end
             if not self.header_focus and not self.composer_focus and nav_msg and self.display_cursor_id == nav_msg.id then
-                if self.message_focus ~= nav_msg.id then
-                    self.message_focus, self.message_focus_time = nav_msg.id, now
-                end
+                self.message_focus_motion = self.message_focus_motion or {}
                 local press = self.message_press
                 local inset = press and press.id == nav_msg.id and ui.press_inset(now - press.at) or 0
-                ui.focus_corners(focus_x + inset, y - 1 + inset, focus_w - 2 * inset, height + 2 - 2 * inset, colors.accent,
-                    ui.focus_lift(now - self.message_focus_time))
+                ui.focus_corners(focus_x + inset, draw_y - 1 + inset, focus_w - 2 * inset, height + 2 - 2 * inset, colors.accent,
+                    ui.navigation_lift(self.message_focus_motion, nav_msg.id, now))
             end
         end
         if y < area_y - 100 then break end
@@ -2981,6 +3093,7 @@ function messenger_screen:draw_conversation(chat, left_width, right_width, h, ba
     end
 
     self.load_more_button = nil
+    self:draw_edge_nudge(self.conversation_edge_at, area_x + 12, area_y + area_h - 5, area_w - 24, now)
     if history_state and not (self.search_active and self.search_query ~= "")
         and (history_state.loading or history_state.has_more or history_state.error)
         and self.model.scroll >= self.model.max_scroll - 12 then
@@ -3177,7 +3290,7 @@ function messenger_screen:draw_read_jump(x, y, state, now, unread)
     end
 end
 
-function messenger_screen:draw_message(message, area_x, y, area_w, height, max_bubble, padding, wrap_width, small_height, line_height, colors, hit)
+function messenger_screen:draw_message(message, area_x, y, area_w, height, max_bubble, padding, wrap_width, small_height, line_height, colors, hit, post_width)
     local function sticker_like_document(message)
         local content = message and message.content
         if not content or content["@type"] ~= "messageDocument" then return false end
@@ -3211,8 +3324,9 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
     local is_video = self.tg:video_kind(message) ~= nil
     local sticker_emoji = ""
     local is_selected = self.selected_messages[message.id] ~= nil
+    local card_limit = math.max(max_bubble, (post_width or 0) + padding * 2)
     local reactions = helpers.reaction_rows(
-        helpers.reaction_summary(message), f.tiny, max_bubble - padding * 2
+        helpers.reaction_summary(message), f.tiny, card_limit - padding * 2
     )
     local reactions_height = helpers.reaction_rows_height(reactions)
     local comment_count = helpers.comment_count(self.model:current_chat(), message)
@@ -3233,7 +3347,8 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
     local post_media = is_video or is_audio or is_animation
     local caption = post_media and (formatted_caption and formatted_caption.text or "")
         or (not is_sticker and image_width and self:photo_caption(message) or "")
-    local caption_lines = caption ~= "" and wrapped_lines(f.normal, caption, post_media and wrap_width or image_width) or {}
+    local caption_lines = caption ~= "" and wrapped_lines(f.normal, caption,
+        post_media and wrap_width or post_width or image_width) or {}
     local caption_links = formatted_caption and helpers.link_ranges(caption, formatted_caption.entities)
     local caption_emoji = formatted_caption and helpers.custom_emoji_ranges(caption, formatted_caption.entities)
     local caption_starts = (caption_links or caption_emoji) and helpers.line_starts(caption, caption_lines)
@@ -3259,12 +3374,10 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
             local line_w = f.normal:getWidth(line)
             max_line = math.max(max_line, line_w)
         end
-        bubble_w = math.min(max_bubble, math.max(96, max_line + padding * 2 + (is_document and 28 or 0)))
+        bubble_w = math.min(card_limit, math.max(96, max_line + padding * 2 + (is_document and 28 or 0)))
     end
-    if post_media then
-        for _, line in ipairs(caption_lines) do
-            bubble_w = math.max(bubble_w, math.min(max_bubble, f.normal:getWidth(line) + padding * 2))
-        end
+    for _, line in ipairs(caption_lines) do
+        bubble_w = math.max(bubble_w, math.min(card_limit, f.normal:getWidth(line) + padding * 2))
     end
     if forwarded then
         bubble_w = math.max(bubble_w, math.min(max_bubble, f.small:getWidth(forwarded) + padding * 2))
@@ -3275,16 +3388,16 @@ function messenger_screen:draw_message(message, area_x, y, area_w, height, max_b
     if sender_name then
         bubble_w = math.max(bubble_w, math.min(max_bubble, f.small:getWidth(sender_name) + padding * 2))
     end
-    bubble_w = math.min(max_bubble, math.max(
+    bubble_w = math.min(card_limit, math.max(
         bubble_w, helpers.reaction_rows_width(reactions) + padding * 2
     ))
     if is_downloading and not is_animation then
-        bubble_w = math.min(max_bubble, math.max(bubble_w, 210))
+        bubble_w = math.min(card_limit, math.max(bubble_w, 210))
     end
 
     if message.content and (message.content["@type"] == "messageVoiceNote"
         or message.content["@type"] == "messageAudio") then
-        bubble_w = math.min(max_bubble, math.max(bubble_w, 220))
+        bubble_w = math.min(card_limit, math.max(bubble_w, 220))
     end
 
     local x = outgoing and (area_x + area_w - bubble_w - 18) or (area_x + 28)

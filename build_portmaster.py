@@ -30,7 +30,7 @@ ROOT_FILES = {
     "icons/emoji/twemoji.png", "icons/emoji/twemoji.txt", "licenses/LICENSE.Twemoji.txt",
     "src/shared/system/performance_trace.lua", "threads/performance_log.lua",
     "src/shared/api/network_recovery.lua", "src/shared/api/wifi_power.lua", "threads/wifi_power.lua",
-    "intro/spgram-intro.ogv", "src/shared/ui/startup_intro.lua",
+    "intro/spgram-intro.ogv", "src/shared/ui/startup_intro.lua", "src/shared/ui/pixel_effects.lua",
 }
 
 

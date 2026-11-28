@@ -101,6 +101,7 @@ assert(next(channel.seen) == nil, "History fetch reported views before drawing")
 channel.draw()
 channel.focus(4)
 assert(channel.tg.history_state[channel.chat_id].unread_divider_id == 4 * id_step)
+assert(channel.screen.unread_sweep and channel.screen.unread_sweep.id == 4 * id_step)
 channel.tg:handle({["@type"] = "updateChatReadInbox", chat_id = channel.chat_id,
     last_read_inbox_message_id = 4 * id_step, unread_count = 16})
 assert(channel.tg.history_state[channel.chat_id].unread_divider_id == 4 * id_step)
@@ -515,7 +516,7 @@ do
     screen:draw_chat_background(0, 56, 640, 402, 1)
     assert(draw_x == -74 and draw_y == 38 and batches == 1)
     assert(shader_count == 0)
-    media.cycle_retroscroll_effect("color", 1)
+    media.set_retroscroll_effect("color", "gradient")
     screen:draw_chat_background(0, 56, 640, 402, 0)
     assert(shader_used == shader and not active_shader and uniforms.hueRotation[1] == 1 and uniforms.hueRotation[2] == 0)
     screen:draw_chat_background(0, 56, 640, 402, 9)
@@ -538,16 +539,16 @@ do
     media.set_chat_background("retroscroll", "night.png")
     assert(screen:draw_chat_background(0, 56, 640, 402, 1))
     assert(paths[2] == "effects/retroscroll/themes/night.png" and released == 2 and batches == 2)
-    media.cycle_retroscroll_effect("color", 2)
+    media.set_retroscroll_effect("color", "two_tone")
     screen:draw_chat_background(0, 56, 640, 402, 0)
     local teal = uniforms.tint[1]
     screen:draw_chat_background(0, 56, 640, 402, 14)
     assert(uniforms.tint[1] > teal and uniforms.hueRotation[1] == 0)
-    media.cycle_retroscroll_effect("motion", 1)
+    media.set_retroscroll_effect("motion", "sway")
     screen:draw_chat_background(0, 56, 640, 402, 4.5)
     assert(draw_angle > 0 and draw_x == 320 and draw_y == 257 and batches == 3)
-    media.cycle_retroscroll_effect("color", 1)
-    media.cycle_retroscroll_effect("motion", 1)
+    media.set_retroscroll_effect("color", "palette")
+    media.set_retroscroll_effect("motion", "ripple")
     screen:draw_chat_background(0, 56, 640, 402, 0)
     local first_palette = uniforms.tint[1]
     assert(uniforms.ripple[1] > 0)
@@ -555,7 +556,7 @@ do
     assert(uniforms.tint[1] == first_palette)
     screen:draw_chat_background(0, 56, 640, 402, 6)
     assert(uniforms.tint[1] ~= first_palette and not active_shader)
-    media.cycle_retroscroll_effect("motion", 1)
+    media.set_retroscroll_effect("motion", "orbit")
     screen:draw_chat_background(0, 56, 640, 402, 10)
     assert(draw_x == -26 and not draw_angle and uniforms.ripple[1] == 0 and shader_count == 1)
     screen:draw_chat_background(0, 56, 640, 402, 40)
@@ -563,8 +564,8 @@ do
     media.set_chat_background("off")
     assert(not screen:draw_chat_background(0, 56, 640, 402, 1) and released == 6)
     assert(not screen:draw_chat_background(0, 56, 640, 402, 2) and released == 6)
-    media.cycle_retroscroll_effect("color", 1)
-    media.cycle_retroscroll_effect("motion", 1)
+    media.set_retroscroll_effect("color", "original")
+    media.set_retroscroll_effect("motion", "diagonal")
     graphics.newImage, graphics.newSpriteBatch, graphics.draw = old_image, old_batch, old_draw
     graphics.newShader, graphics.setShader = old_new_shader, old_set_shader
     love.filesystem.read, love.filesystem.write, love.filesystem.getInfo = read, write, info
@@ -594,3 +595,98 @@ long_chat.draw()
 assert(wrapping >= 400, "New comments or reactions must invalidate conversation layout")
 font.getWrap = wrap
 print("Stable conversation frames reuse the measured history and rebuild after edits and interaction updates")
+
+do
+    local original_wrap = font.getWrap
+    function font:getWrap(text, width)
+        local lines, line = {}, ""
+        for word in text:gmatch("%S+") do
+            local next_line = line == "" and word or line .. " " .. word
+            if line ~= "" and self:getWidth(next_line) > width then
+                lines[#lines + 1], line = line, word
+            else
+                line = next_line
+            end
+        end
+        lines[#lines + 1] = line
+        return width, lines
+    end
+    local body = ("One two three four five six seven. "):rep(7)
+    local function posts(kind)
+        local view = fixture("Wide posts", kind, 2, 0, nil, nil, 2)
+        local plain, photo = view.history[1], view.history[2]
+        plain.content.text.text = body
+        photo.content = {["@type"] = "messagePhoto", caption = {text = body},
+            photo = {sizes = {{width = 320, height = 180, photo = {id = 4321}}}}}
+        view.tg.ensure_photo, view.tg.photo_image = noop, noop
+        view.answer(2, -15, 1, 2)
+        local screen = view.screen
+        screen:draw_conversation(view.tg.chats_by_id[view.chat_id], 192, 448, 480)
+        local heights = {}
+        local layout = screen.cached_conversation_layout
+        for i, item in ipairs(layout.items) do
+            if item.message then heights[item.message.id] = layout.heights[i] end
+        end
+        local hit
+        for _, item in ipairs(screen.media_hits) do
+            if item.message == photo then hit = item; break end
+        end
+        return heights, assert(hit), layout.post_width
+    end
+    local private, private_photo = posts("chatTypePrivate")
+    local channel, channel_photo, post_width = posts("chatTypeSupergroup")
+    assert(post_width == 350)
+    assert(channel[id_step] < private[id_step] and channel[2 * id_step] < private[2 * id_step])
+    assert(channel_photo.media_w == private_photo.media_w and channel_photo.media_h == private_photo.media_h)
+    assert(channel_photo.bubble_w > 330 and channel_photo.bubble_x + channel_photo.bubble_w <= 640 - 26)
+    font.getWrap = original_wrap
+end
+print("Wide channel cards shorten text and photo captions while keeping thumbnail sizes.")
+
+do
+    local ui = require("src.shared.ui.ui_kit")
+    local media = require("src.shared.system.media_settings")
+    local focus = {}
+    assert(ui.navigation_lift(focus, 1, 2) == 0)
+    assert(ui.navigation_lift(focus, 1, 2.06) > 0)
+    ui.navigation_repeating = true
+    assert(ui.navigation_lift(focus, 2, 2.1) == 0)
+    assert(ui.navigation_lift(focus, 3, 2.2) == 0)
+    ui.navigation_repeating = false
+    assert(ui.navigation_lift(focus, 3, 2.3) == 0 and ui.navigation_lift(focus, 3, 2.36) > 0)
+    assert(ui.panel_slide(0, 0.25, 24) == 24 and ui.panel_slide(0.175, 0.25, 24) < 0)
+    media.set("ui_motion", false)
+    assert(ui.panel_slide(0, 0.25, 24) == 0 and ui.navigation_lift(focus, 3, 2.37) == 0)
+    media.set("ui_motion", true)
+
+    local view = fixture("Sending messages", "chatTypePrivate", 1, 0, nil, nil, 1)
+    view.answer(1, -15, 1, 1)
+    local tg, id = view.tg, view.chat_id
+    tg.history_state[id] = nil
+    local function message(mid, state)
+        return {id = mid, chat_id = id, is_outgoing = true, sending_state = state,
+            content = {["@type"] = "messageText", text = {text = "Last message"}}}
+    end
+    local pending = message(2 * id_step, {["@type"] = "messageSendingStatePending"})
+    tg:handle_new_message(pending)
+    assert(tg.outgoing_motion.id == pending.id and tg:message_delivery(pending) == "pending")
+    local failed = message(pending.id, {["@type"] = "messageSendingStateFailed", can_retry = true, retry_after = 0.5})
+    tg:handle_send_failed({message = failed, old_message_id = pending.id})
+    assert(tg:get_messages(id)[2] == failed and tg:message_delivery(failed) == "failed")
+    local request_count = #view.requests
+    tg:retry_message(failed)
+    assert(#view.requests == request_count)
+    now = now + 1
+    tg:retry_message(failed)
+    local request = view.requests[#view.requests].object
+    assert(request["@type"] == "resendMessages" and request.message_ids[1] == failed.id)
+    tg:retry_message(failed)
+    assert(#view.requests == request_count + 1)
+    local sent = message(3 * id_step, nil)
+    tg:handle({["@type"] = "messages", ["@extra"] = tg.pending_message_retry.token, messages = {sent}})
+    assert(not tg.pending_message_retry and tg:get_messages(id)[3] == sent)
+    tg:push_notification({chat_id = 20, created = now})
+    tg:push_notification({chat_id = 20, created = now + 1})
+    assert(#tg.notifications == 1 and tg.notifications[1].count == 2 and tg.notifications[1].motion_started == now)
+end
+print("Held focus, outgoing motion, manual retry and coalesced notifications passed.")

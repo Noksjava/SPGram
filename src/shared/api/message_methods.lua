@@ -21,13 +21,14 @@ end
 
 return function(telegram)
     function telegram:message_delivery(message)
-        if not message or not message.is_outgoing or message.is_channel_post or message.scheduling_state then return end
-        local chat = self.chats_by_id[message.chat_id] or self.archive_chats_by_id[message.chat_id]
-        local kind = chat and chat.type
-        if not kind or kind.is_channel or (kind.user_id and self.me and kind.user_id == self.me.id) then return end
+        if not message or not message.is_outgoing or message.scheduling_state then return end
         if message.sending_state then
             return message.sending_state["@type"] == "messageSendingStateFailed" and "failed" or "pending"
         end
+        if message.is_channel_post then return end
+        local chat = self.chats_by_id[message.chat_id] or self.archive_chats_by_id[message.chat_id]
+        local kind = chat and chat.type
+        if not kind or kind.is_channel or (kind.user_id and self.me and kind.user_id == self.me.id) then return end
         local id = tonumber(message.id) or 0
         if id <= 0 or chat.last_read_outbox_message_id == nil then return end
         return id <= (tonumber(chat.last_read_outbox_message_id) or 0) and "read" or "sent"
@@ -654,6 +655,7 @@ return function(telegram)
         local latest = chat and chat.last_message and chat.last_message.id
         state.has_newer = not newest and (not latest or target.id < latest)
         state.catch_up = state.has_newer
+        state.unread_sweep_pending = state.has_newer and chat and (tonumber(chat.unread_count) or 0) > 0 or nil
         state.resume_id, state.unread_after, state.unread_remaining, state.keep_position_id = nil, nil, nil, nil
         state.initial_focus_id = target.id
     end
@@ -825,6 +827,44 @@ return function(telegram)
                 },
             },
         }, token)
+    end
+
+    function telegram:can_retry_message(message)
+        local state = message and message.sending_state
+        return state and state["@type"] == "messageSendingStateFailed" and state.can_retry
+            and not state.need_another_sender and not state.need_another_reply_quote
+            and not state.need_drop_reply and (tonumber(state.required_paid_message_star_count) or 0) == 0
+    end
+
+    function telegram:retry_message(message)
+        if not self:can_retry_message(message) or self.pending_message_retry then return end
+        local request = {["@type"] = "resendMessages", chat_id = message.chat_id, message_ids = {message.id}}
+        local now = love.timer.getTime()
+        message.retry_at = message.retry_at or now + math.max(0, tonumber(message.sending_state.retry_after) or 0)
+        if now < message.retry_at then
+            self.action_error, self.action_status = "Try again in " .. math.ceil(message.retry_at - now) .. " seconds.", ""
+            return
+        end
+        self.message_retry_sequence = (self.message_retry_sequence or 0) + 1
+        local token = self:send(request, "retry_message:" .. self.message_retry_sequence)
+        if token then
+            self.pending_message_retry = {token = token, deadline = now + 15}
+            self.action_error, self.action_status = "", "Retrying message…"
+        end
+    end
+
+    function telegram:handle_message_retry(response, extra)
+        if not extra:match("^retry_message:%d+$") then return false end
+        if not self.pending_message_retry or extra ~= self.pending_message_retry.token then return true end
+        self.pending_message_retry = nil
+        local message = response.messages and response.messages[1]
+        if type(message) == "table" and message.id then
+            self:handle_new_message(message)
+            self.action_error, self.action_status = "", ""
+        else
+            self.action_error, self.action_status = "Could not resend this message.", ""
+        end
+        return true
     end
 
     function telegram:mark_chat_viewed(chat_id, messages)
@@ -1184,6 +1224,10 @@ return function(telegram)
             end
             if not replaced then
                 list[#list + 1] = message
+                if message.is_outgoing and message.sending_state
+                    and message.sending_state["@type"] == "messageSendingStatePending" then
+                    self.outgoing_motion = {chat_id = message.chat_id, id = message.id, at = love.timer.getTime()}
+                end
                 if history and not history.unread_divider_id and not history.fallback_unread
                     and chat and not from_me and not message.is_outgoing
                     and message.id > (tonumber((topic or chat).last_read_inbox_message_id) or 0) then
@@ -1207,13 +1251,12 @@ return function(telegram)
         end
     end
 
-    function telegram:handle_send_succeeded(update)
+    function telegram:replace_local_message(update)
         local old_id = update.old_message_id
         local message = update.message
         if not message or not message.chat_id then
             return
         end
-        self.delivery_feedback = {chat_id = message.chat_id, id = message.id, at = love.timer.getTime()}
         local forum = self.forum
         local topic_id = message.topic_id and message.topic_id.forum_topic_id
         local topic = forum and forum.chat_id == message.chat_id and topic_id and self:find_forum_topic(forum, topic_id)
@@ -1230,6 +1273,28 @@ return function(telegram)
             end
         end
         self:handle_new_message(message)
+    end
+
+    function telegram:handle_send_succeeded(update)
+        local message = update.message
+        if not message or not message.chat_id then return end
+        local now = love.timer.getTime()
+        local motion = self.outgoing_motion
+        if motion and motion.chat_id == message.chat_id and motion.id == update.old_message_id then
+            motion.id = message.id
+        elseif self.current_chat_id == message.chat_id then
+            self.outgoing_motion = {chat_id = message.chat_id, id = message.id, at = now}
+        end
+        self.delivery_feedback = {chat_id = message.chat_id, id = message.id, at = now}
+        self:replace_local_message(update)
+    end
+
+    function telegram:handle_send_failed(update)
+        local message = update.message
+        if not message or not message.chat_id then return end
+        local state = message.sending_state
+        if state then message.retry_at = love.timer.getTime() + math.max(0, tonumber(state.retry_after) or 0) end
+        self:replace_local_message(update)
     end
 
     function telegram:handle_message_content(update)

@@ -541,17 +541,31 @@ control("symbols")
 local draft = "Aé你😀"
 local _, move = typed:keypressed("pageup")
 assert(typed:apply_edit(draft, move) == draft and typed:caret(draft) == #"Aé你")
-draft = typed:apply_edit(draft, control("cursor_left"))
+typed.row, typed.col = 1, 1
+typed:keypressed("up")
+assert(typed.row == 0 and typed.col == 1)
+draft = typed:apply_edit(draft, typed:activate())
 assert(typed:caret(draft) == #"Aé")
 local _, erase = typed:keypressed("x")
 draft = typed:apply_edit(draft, erase)
 assert(draft == "A你😀")
 draft = typed:apply_edit(draft, {kind = "text", text = "!"})
 assert(draft == "A!你😀" and typed:caret(draft) == 2)
-draft = typed:apply_edit(draft, control("cursor_right"))
+typed:keypressed("right")
+draft = typed:apply_edit(draft, typed:activate())
 assert(typed:caret(draft) == #"A!你")
 local _, next_cursor = typed:keypressed("pagedown")
 assert(typed:apply_edit(draft, next_cursor) == draft and typed:caret(draft) == #draft)
+typed:keypressed("right")
+assert(typed.row == 0 and typed.col == 3 and typed:activate().kind == "backspace")
+typed:keypressed("down")
+assert(typed.row == 1 and typed.col == #typed.layout[1])
+assert(control("space").text == " ")
+control("emoji")
+assert(typed.mode == "emoji" and pick("😀").text == "😀")
+control("emoji")
+assert(typed.mode == "text")
+for _, key in ipairs(typed.controls) do assert(key.action ~= "stickers") end
 assert(control("enter").kind == "enter")
 do
     local kit = require("src.shared.ui.ui_kit")
@@ -561,7 +575,7 @@ do
         local enter_drawn = false
         drawn.Enter = nil
         kit.rect = function(x, y, w, h, color, radius)
-            if w == 92 and h == 38 then
+            if (w == 92 and h == 38) or (w == 86 and h == 35) then
                 assert(color == kit.colors.accent or color == typed.enter_color)
                 enter_drawn = true
             end
@@ -572,6 +586,26 @@ do
     end
     kit.rect = rectangle
     kit.set_theme(theme)
+    local w, h = love.graphics.getWidth, love.graphics.getHeight
+    local height, width, keyboard_top, space_width
+    local print_text, positions = love.graphics.print, {}
+    love.graphics.print = function(text, x, y) positions[text] = y end
+    love.graphics.getHeight = function() return height end
+    love.graphics.getWidth = function() return width end
+    kit.rect = function(x, y, w, h, color, radius)
+        if not keyboard_top then keyboard_top = y end
+        if w > 130 and h <= 38 then space_width = math.max(space_width or 0, w) end
+        rectangle(x, y, w, h, color, radius)
+    end
+    for _, size in ipairs({{640, 480}, {480, 320}}) do
+        width, height = size[1], size[2]
+        keyboard_top, space_width = nil, nil
+        typed:draw(draft)
+        assert(keyboard_top >= 0 and space_width >= 150)
+        assert(positions.Backspace < positions.q and positions.Space > positions.q)
+    end
+    love.graphics.getWidth, love.graphics.getHeight, love.graphics.print = w, h, print_text
+    kit.rect = rectangle
 end
 for _, language in ipairs({"en","fr","ru","uk","pl"}) do assert(preferences.toggle(language)) end
 assert(not preferences.toggle("zh") and preferences.current() == "zh")
@@ -616,25 +650,42 @@ do
     media.load()
     open_item("retroscroll")
     menu:draw()
+    assert(#menu:items() == 3 and drawn.Select and drawn["Color effects"] and drawn["Motion effects"])
+    assert(not drawn["Night Sky.v2"] and not drawn["wavelenght-tg"])
+    menu:keypressed("return")
+    assert(menu.section.label == "Select" and #menu:items() == 3 and menu:items()[1].id == "background_off")
+    menu:draw()
     assert(drawn["Night Sky.v2"] and drawn["wavelenght-tg"] and not drawn["Night Sky.v2.PNG"] and not drawn["metadata"])
-    assert(#menu:items() == 5 and menu:items()[1].id == "background_off" and drawn["Color effect"] and drawn["Motion effect"])
     menu:keypressed("down")
     menu:keypressed("return")
     assert(media.retroscroll_tile() == "Night Sky.v2.PNG")
     assert(config:find("retroscroll_tile=Night Sky.v2.PNG", 1, true))
+    menu:keypressed("escape")
     menu:keypressed("down")
+    menu:keypressed("return")
+    assert(menu.section.label == "Color effects" and #menu:items() == 4)
     menu:keypressed("down")
     menu:keypressed("return")
     assert(media.retroscroll_effect("color") == "gradient" and config:find("retroscroll_gradient=1", 1, true))
-    menu:keypressed("right")
-    assert(media.retroscroll_effect("color") == "two_tone")
     menu:keypressed("down")
-    menu:keypressed("left")
+    menu:keypressed("return")
+    assert(media.retroscroll_effect("color") == "two_tone")
+    menu:keypressed("escape")
+    menu:keypressed("return")
+    assert(menu.selected_item == 3)
+    menu:keypressed("escape")
+    menu:keypressed("down")
+    menu:keypressed("return")
+    assert(menu.section.label == "Motion effects" and #menu:items() == 4)
+    menu:keypressed("down")
+    menu:keypressed("down")
+    menu:keypressed("down")
+    menu:keypressed("return")
     assert(media.retroscroll_effect("motion") == "orbit" and config:find("retroscroll_motion=orbit", 1, true))
+    menu:keypressed("escape")
     menu:keypressed("up")
     menu:keypressed("up")
-    menu:keypressed("up")
-    menu:keypressed("up")
+    menu:keypressed("return")
     menu:keypressed("return")
     assert(media.chat_background() == "off" and config:find("chat_background=off", 1, true))
     menu:enter()
@@ -648,8 +699,32 @@ do
     open_item("backgrounds")
     open_item("background_animated")
     open_item("retroscroll")
+    open_item("retroscroll_select")
     assert(menu:items()[2].label == "Extra")
     filesystem.read, filesystem.write, filesystem.getDirectoryItems, filesystem.getInfo = read, write, items, info
+end
+
+do
+    local kit = require("src.shared.ui.ui_kit")
+    local window, text = love.window, kit.text
+    local attempts, muted = 0, false
+    love.window = {minimize = function() attempts = attempts + 1 end}
+    kit.text = function(value, x, y, font, color)
+        if value == "Minimize" then muted = color == kit.colors.muted end
+        text(value, x, y, font, color)
+    end
+    menu:enter()
+    for _, item in ipairs(menu:items()) do
+        if item.id == "advanced" then menu:activate_item(item); break end
+    end
+    local items = menu:items()
+    assert(items[#items].id == "minimize" and items[#items].disabled)
+    menu.selected_item = #items
+    menu:draw()
+    assert(muted and drawn.Unavailable)
+    menu:keypressed("return")
+    assert(attempts == 0)
+    love.window, kit.text = window, text
 end
 
 do
@@ -728,6 +803,53 @@ do
     font.getWrap = wrap
     graphics.print, graphics.intersectScissor, graphics.getHeight = print_text, scissor, screen_height
     love.timer.getTime, love.event = clock, previous_event
+end
+
+do
+    local Release = require("src.features.auth.ui.release_screen")
+    local prompt = setmetatable({fonts = menu.fonts, available = true, version = "0.2.72",
+        latest = "0.2.73", notes = "Forum topics now show previews.", launch_offer = true}, Release)
+    prompt:open_launch_prompt()
+    prompt:draw_launch_prompt()
+    assert(not prompt.launch_offer and prompt.launch_selection == 1)
+    assert(drawn["New SPgram update"] and drawn["v0.2.72  →  v0.2.73"] and drawn["Forum topics now show previews."])
+    assert(drawn["Not now"] and drawn["Update now"] and prompt:launch_keypressed("return") == "back")
+    local skip = prompt.launch_buttons[1]
+    assert(prompt:launch_mousepressed(skip.x + 1, skip.y + 1, 1) == "back")
+    assert(prompt:launch_keypressed("escape") == "back" and prompt.available)
+    assert(not prompt.install_code and not prompt.install_after_download)
+
+    local reply
+    prompt.channel = {pop = function() local value = reply; reply = nil; return value end}
+    prompt.start = function(self, operation)
+        assert(operation == "download")
+        self.operation, self.downloading, self.thread, self.cancelled = operation, true, {}, false
+    end
+    prompt:launch_keypressed("right")
+    prompt:launch_keypressed("return")
+    assert(prompt:operation_active() and prompt.install_after_download)
+    reply = {failed = true}
+    prompt:poll()
+    assert(not prompt.install_code and not prompt.install_after_download and prompt.status_tone == "error")
+    prompt:draw_launch_prompt()
+    local _, failure_lines = menu.fonts.small:getWrap(prompt.status, prompt.launch_buttons[2].w * 2 + 10)
+    assert(drawn[failure_lines[1]])
+    prompt:launch_keypressed("return")
+    prompt.cancelled = true
+    reply = {verified = true}
+    prompt:poll()
+    assert(not prompt.install_code and prompt.status == "Download cancelled.")
+    prompt:launch_keypressed("return")
+    reply = {verified = true}
+    prompt:poll()
+    assert(prompt.install_code == 41 and prompt.verified)
+
+    local recovery = setmetatable({fonts = menu.fonts, status = "The previous version was restored.",
+        status_tone = "error"}, Release)
+    recovery:open_launch_prompt()
+    recovery:draw_launch_prompt()
+    assert(drawn["Update could not finish"] and drawn.Continue)
+    assert(recovery:launch_keypressed("return") == "back")
 end
 
 menu:enter()
@@ -1553,6 +1675,11 @@ do
     assert(#reader.reader_links == 3)
     graphics.draw, graphics.print, tg.user_photo_image = draw_image, print_text, user_photo
     screen:keypressed("y")
+    for index, item in ipairs(screen.context_menu.items) do
+        if item.action == "reader_links" then screen.context_menu.index = index; break end
+    end
+    assert(not reader.link_index)
+    screen:keypressed("return")
     assert(reader.link_index == 1)
     screen:keypressed("return")
     local pending = screen.sponsor_prompt.link
@@ -1575,13 +1702,57 @@ do
 
     local chat_photo, requested = tg.chat_photo_image
     tg.chat_photo_image = function(_, id) requested = id end
+    local private = chat.type
+    chat.type = {["@type"] = "chatTypeSupergroup", is_channel = true}
     local post = {id = 1000, chat_id = chat.id, is_channel_post = true,
-        sender_id = {["@type"] = "messageSenderChat", chat_id = chat.id}, content = message.content}
+        sender_id = {["@type"] = "messageSenderChat", chat_id = chat.id}, content = message.content,
+        forward_info = {origin = {["@type"] = "messageOriginUser", sender_user_id = 81}}}
     assert(screen:read_message(post))
     screen:draw_text_preview(640, 480)
     assert(requested == chat.id and drawn["Post by"] and drawn[chat.title])
     tg.chat_photo_image = chat_photo
+    local post_reader = screen.text_preview
+    local function select_action(action, label)
+        local menu = assert(screen.context_menu)
+        for index, item in ipairs(menu.items) do
+            if item.action == action and (not label or item.label == label) then
+                menu.index = index
+                screen:keypressed("return")
+                return
+            end
+        end
+        error("Missing post action " .. action)
+    end
+    screen:keypressed("y")
+    local menu = assert(screen.context_menu)
+    assert(menu.reader == post_reader and menu.items[1].label == "Channel options")
+    for _, item in ipairs(menu.items) do assert(item.action ~= "read_message" and item.action ~= "delete") end
+    select_action("conversation_options")
+    assert(screen.context_menu.reader == post_reader)
+    select_action("chat_info", "Channel info")
+    assert(screen.wants_profile_chat_id == chat.id and screen.text_preview == post_reader)
+    screen.wants_profile_chat_id = nil
+    screen:keypressed("y")
+    select_action("open_sender_profile", "Original sender profile")
+    assert(screen.wants_profile_user_id == 81 and screen.text_preview == post_reader)
+    screen.wants_profile_user_id = nil
+    screen:keypressed("y")
+    select_action("forward")
+    assert(screen.forward_mode and not screen.text_preview and screen.selected_messages[post.id] == post)
     screen:keypressed("escape")
+    assert(not screen.forward_mode and screen.text_preview == post_reader)
+    screen:keypressed("y")
+    menu = assert(screen.context_menu)
+    tg:handle({["@type"] = "messageProperties", ["@extra"] = menu.receipt_lookup.token,
+        can_be_deleted_for_all_users = true})
+    screen:refresh_message_options(menu)
+    select_action("delete")
+    assert(screen.context_menu.reader == post_reader and screen.context_menu.items[1].revoke)
+    local delete, deleted = tg.delete_messages
+    tg.delete_messages = function(_, chat_id, ids, revoke) deleted = chat_id == post.chat_id and ids[1] == post.id and revoke end
+    select_action("confirm_delete")
+    assert(deleted and not screen.text_preview)
+    tg.delete_messages, chat.type = delete, private
 
     local menu = require("src.features.auth.ui.settings_screen").new({}, tg, {
         accounts = function() return {{key = "account_1", title = "Fixture Author"}}, "account_1" end,
@@ -1682,7 +1853,12 @@ do
     local reader = screen.text_preview
     screen:keypressed("y")
     local menu = screen.context_menu
-    local item = menu.items[1]
+    local function pick_receipts(target)
+        for index, item in ipairs(target.items) do
+            if item.action == "read_receipts" then target.index = index; return item end
+        end
+    end
+    local item = pick_receipts(menu)
     assert(item.action == "read_receipts" and screen:context_item_disabled(menu, item))
     screen:keypressed("return")
     assert(screen.context_menu == menu and screen.text_preview == reader)
@@ -1696,7 +1872,7 @@ do
     menu = screen.context_menu
     local lookup = menu.receipt_lookup
     tg:handle({["@type"] = "messageProperties", ["@extra"] = lookup.token, can_get_read_date = true})
-    assert(not screen:context_item_disabled(menu, menu.items[1]))
+    assert(not screen:context_item_disabled(menu, pick_receipts(menu)))
     screen:keypressed("return")
     assert(screen.text_preview.receipts == lookup)
     assert(sent["@type"] == "getMessageReadDate")

@@ -146,7 +146,11 @@ return function(messenger_screen, layout)
         local delta = key == "up" and -1 or key == "down" and 1
             or key == "pageup" and -page or key == "pagedown" and page
         if delta then
+            local previous = forum.index
             forum.index = math.max(1, math.min(#forum.topics, forum.index + delta))
+            if previous == forum.index and forum.complete and not ui.navigation_repeating then
+                forum.edge_at = love.timer.getTime()
+            end
             if delta > 0 and forum.index >= #forum.topics - 2 then self.tg:request_forum_topics() end
         end
     end
@@ -740,8 +744,6 @@ return function(messenger_screen, layout)
         if result then
             if result.kind == "enter" then
                 self:keyboard_enter()
-            elseif result.kind == "stickers" then
-                self:open_stickers()
             elseif result.kind == "files" then
                 self:open_file_browser()
             else
@@ -751,7 +753,7 @@ return function(messenger_screen, layout)
         return true
     end
 
-    function messenger_screen:open_message_context_menu(message, pointer_x, pointer_y)
+    function messenger_screen:open_message_context_menu(message, pointer_x, pointer_y, reader)
         if self.keyboard then self.keyboard.visible = false end
         local pos = message and self.nav_pos and self.nav_pos[message.id]
         local x = 120
@@ -760,8 +762,8 @@ return function(messenger_screen, layout)
         end
         local y = pos and pos.y or 160
         self.context_menu = {
-            x = pointer_x or x, y = pointer_y or y, message = message,
-            items = self:context_menu_items(message),
+            x = pointer_x or x, y = pointer_y or y, message = message, reader = reader,
+            items = self:context_menu_items(message, reader),
             receipt_lookup = self.tg:check_message_options(message),
             index = 1, delete_index = 2,
         }
@@ -907,6 +909,7 @@ return function(messenger_screen, layout)
         local message = self:focused_message()
         if not message then return end
         self.message_press = {id = message.id, at = love.timer.getTime()}
+        if self.tg:can_retry_message(message) then return self.tg:retry_message(message) end
         local album = self.nav_albums and self.nav_albums[message.id]
         if album then self:open_album_post(album); return end
         local content = message.content or {}
@@ -1006,10 +1009,11 @@ return function(messenger_screen, layout)
         if self.keyboard then self.keyboard.visible = show_keyboard end
     end
 
-    function messenger_screen:begin_forward(chat_id)
+    function messenger_screen:begin_forward(chat_id, reader)
         local selected = self.model:selected_chat()
         self.forward_anchor = {chat_id = self.tg.current_chat_id or chat_id, selected_id = selected and selected.id,
-            index = self.model.selected, offset = self.model.list_offset}
+            index = self.model.selected, offset = self.model.list_offset, reader = reader}
+        if reader then self.text_preview = nil end
         self.forward_mode, self.forward_from_chat_id = true, chat_id
         self.search_active, self.header_focus = false, nil
         self.model.selected, self.model.list_offset = 1, 0
@@ -1022,6 +1026,7 @@ return function(messenger_screen, layout)
         local anchor = self.forward_anchor
         self.forward_anchor = nil
         if not anchor then return end
+        if anchor.reader and self.tg.current_chat_id == anchor.chat_id then self.text_preview = anchor.reader end
         local rows = self:get_visible_chat_list()
         self.model.visible_chats = rows
         local selected = math.max(1, math.min(#rows, anchor.index))
@@ -1067,7 +1072,7 @@ return function(messenger_screen, layout)
         if not menu.message or menu.message_options_added or not properties then return end
         menu.message_options_added = true
         local message = menu.message
-        if not menu.comment_thread and not menu.reader and properties.can_be_edited
+        if not menu.comment_thread and not menu.receipt_thread and properties.can_be_edited
             and message.content and message.content["@type"] == "messageText"
             and not self.tg:is_saved_messages(message.chat_id) then
             menu.items[#menu.items + 1] = {label = "Edit", action = "edit"}
@@ -1090,7 +1095,7 @@ return function(messenger_screen, layout)
             local items = self:chat_context_menu_items(item.chat, true)
             items[#items + 1] = {label = "Back", action = "context_back"}
             self.context_menu = {title = item.label, x = cm.x, y = cm.y,
-                chat = item.chat, items = items, index = 1, parent = cm}
+                chat = item.chat, items = items, index = 1, parent = cm, reader = cm.reader}
             self.menu_anim = 0
             return
         end
@@ -1110,6 +1115,7 @@ return function(messenger_screen, layout)
             return
         end
         if item.action == "search" then
+            if cm.reader then self.text_preview = nil end
             self:start_search(true)
             return
         end
@@ -1118,7 +1124,7 @@ return function(messenger_screen, layout)
             return
         end
         if item.action == "forward_selected" then
-            self:begin_forward(self.tg.current_chat_id)
+            self:begin_forward(self.tg.current_chat_id, cm.reader)
             return
         end
         if item.action == "recent_stickers" then
@@ -1145,7 +1151,9 @@ return function(messenger_screen, layout)
             self.context_menu = nil
             return
         end
-        if item.action == "delete" then
+        if item.action == "retry_message" then
+            self.tg:retry_message(cm.message)
+        elseif item.action == "delete" then
             local properties = cm.receipt_lookup and cm.receipt_lookup.properties
             if not properties then return end
             local choices = {}
@@ -1184,6 +1192,7 @@ return function(messenger_screen, layout)
             local id = cm.message.id
             if self.selected_messages[id] then self.selected_messages[id] = nil
             else self.selected_messages[id] = cm.message end
+            if cm.reader then self.text_preview = nil end
         elseif item.action == "open_sender_profile" then
             self.wants_profile_user_id, self.wants_profile_chat_id = item.user_id, item.chat_id
         elseif item.action == "copy" then
@@ -1191,9 +1200,12 @@ return function(messenger_screen, layout)
                 self.tg.action_error, self.tg.action_status = "Telegram restricts copying this message.", ""
                 return
             end
-            local text = cm.message.content and cm.message.content.text and cm.message.content.text.text or ""
+            local content = cm.message.content
+            local formatted = content and (content.text or content.caption)
+            local text = formatted and formatted.text or ""
             if text ~= "" then love.system.setClipboardText(text) end
         elseif item.action == "react" then
+            if cm.reader then self.text_preview = nil end
             self:open_reaction_menu(cm.message)
         elseif item.action == "forward" then
             if not self.tg:message_can_be_shared(cm.message, cm.message.chat_id or self.tg.current_chat_id) then
@@ -1201,7 +1213,7 @@ return function(messenger_screen, layout)
                 return
             end
             self.selected_messages[cm.message.id] = cm.message
-            self:begin_forward(cm.message.chat_id or self.tg.current_chat_id)
+            self:begin_forward(cm.message.chat_id or self.tg.current_chat_id, cm.reader)
         elseif item.action == "play_media" then
             if self.tg:video_kind(cm.message) then self:open_video(cm.message)
             else self:open_audio(cm.message) end
@@ -1249,6 +1261,7 @@ return function(messenger_screen, layout)
             local properties = cm.receipt_lookup and cm.receipt_lookup.properties
             if not properties or not properties.can_be_edited
                 or self.tg:is_saved_messages(cm.message.chat_id or self.tg.current_chat_id) then return end
+            if cm.reader then self.text_preview = nil end
             self.edit_mode = true
             self.keyboard:reset_caret()
             self.edit_message = cm.message
@@ -1319,6 +1332,10 @@ return function(messenger_screen, layout)
 
     function messenger_screen:open_reader_options(preview, thread)
         local message = preview.receipt_message or preview.author_message
+        if message and not thread then
+            self:open_message_context_menu(message, (ui.width() - 240) / 2, 64, preview)
+            return true
+        end
         if not self.tg:receipt_chat(message) then return false end
         local items = {{action = "read_receipts", label = "Read receipts"}}
         if preview.link_rows then items[#items + 1] = {action = "reader_links", label = "Select a link"} end
@@ -1363,8 +1380,8 @@ return function(messenger_screen, layout)
                     self.tg.quote_lookup = nil
                     self.text_preview = preview.return_preview
                 end
-            elseif (key == "y" or key == "options") and preview.link_rows and #preview.reader_links > 0 then
-                if preview.link_index then preview.link_index = nil else self:focus_reader_link(preview, 1) end
+            elseif (key == "y" or key == "options") and preview.link_index then
+                preview.link_index = nil
             elseif preview.link_index then
                 if key == "up" then self:focus_reader_link(preview, preview.link_index - 1)
                 elseif key == "down" then self:focus_reader_link(preview, preview.link_index + 1)
@@ -1618,7 +1635,7 @@ return function(messenger_screen, layout)
             end
             return
         end
-        if (key == "p" or key == "m") and not self.tg.current_chat_id then
+        if key == "p" and not self.tg.current_chat_id then
             self.wants_profile_self = true
             return
         end
@@ -1847,6 +1864,7 @@ return function(messenger_screen, layout)
                 elseif self:cursor_index() >= #(self.nav_messages or {}) then
                     local text, media = self.tg:chat_send_capabilities(self.model:current_chat())
                     self.composer_focus = text and 1 or media and 2 or nil
+                    if not self.composer_focus and not ui.navigation_repeating then self.conversation_edge_at = love.timer.getTime() end
                     self.model.scroll = 0
                 else
                     self:move_message_cursor(1)
@@ -1877,7 +1895,11 @@ return function(messenger_screen, layout)
                 if self.model.selected <= 1 then self:focus_header("settings")
                 else self.model.selected = self.model.selected - 1 end
             elseif key == "down" then
-                self.model.selected = math.min(#self:get_visible_chat_list(), self.model.selected + 1)
+                local count = #self:get_visible_chat_list()
+                if count > 0 and self.model.selected >= count and not ui.navigation_repeating then
+                    self.list_edge_at = love.timer.getTime()
+                end
+                self.model.selected = math.max(1, math.min(count, self.model.selected + 1))
             elseif key == "pageup" then
                 self.model.selected = math.max(1, self.model.selected - 5)
             elseif key == "pagedown" then

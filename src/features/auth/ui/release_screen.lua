@@ -63,6 +63,8 @@ function Release:poll()
     end
     reply = reply or self.channel:pop() or {failed = true}
     self.thread = nil
+    local install_after_download = self.install_after_download
+    self.install_after_download = nil
     if self.cancelled then
         self.status = "Download cancelled."
     elseif reply.failed or (self.downloading and not reply.verified) then
@@ -77,6 +79,7 @@ function Release:poll()
         else
             self.verified = true
             self.status = "Update verified. Install when ready."
+            if install_after_download then self:begin_install(41) end
         end
     elseif self.operation == "rollback-list" then
         self.rollback_versions = reply.versions or {}
@@ -117,6 +120,39 @@ function Release:shutdown_delayed()
     self.install_code, self.install_sent, self.operation_drawn_at = nil, nil, nil
     self.status = "Telegram is still closing. Try again in a moment."
     self.status_tone = "error"
+end
+
+function Release:open_launch_prompt()
+    self.launch_offer = false
+    self.launch_selection, self.notes_started = 1, nil
+    self.launch_buttons = nil
+end
+
+function Release:launch_keypressed(key)
+    if self:operation_active() then return self:keypressed(key) end
+    if key == "escape" or key == "b" then return "back" end
+    if self.available then
+        if key == "left" or key == "up" then self.launch_selection = 1 end
+        if key == "right" or key == "down" then self.launch_selection = 2 end
+    end
+    if key ~= "return" and key ~= "kpenter" and key ~= "a" then return end
+    if not self.available or self.launch_selection == 1 then return "back" end
+    if self.verified then
+        self:begin_install(41)
+    else
+        self:start("download")
+        self.install_after_download = self.thread and true or nil
+    end
+end
+
+function Release:launch_mousepressed(x, y, button)
+    if button ~= 1 then return end
+    for index, bounds in ipairs(self.launch_buttons or {}) do
+        if x >= bounds.x and x < bounds.x + bounds.w and y >= bounds.y and y < bounds.y + bounds.h then
+            self.launch_selection = index
+            return self:launch_keypressed("return")
+        end
+    end
 end
 
 function Release:items()
@@ -290,6 +326,60 @@ function Release:draw_notes(x, y, width, height)
         ui.text(layout.lines[index], x, y + (index - 1) * line_height - offset, font, colors.muted)
     end
     love.graphics.pop()
+end
+
+function Release:draw_launch_prompt()
+    local f, colors = self.fonts, ui.colors
+    local w, h = ui.width(), ui.height()
+    local width, height = math.min(w - 32, 544), math.min(h - 28, 410)
+    local x, y = math.floor((w - width) / 2), math.floor((h - height) / 2)
+    local available = self.available and self.latest
+    local title = available and "New SPgram update" or "Update could not finish"
+    local content_x, content_w = x + 20, width - 40
+    ui.rect(0, 0, w, h, colors.bg)
+    ui.retro_panel(x, y, width, height, colors.panel, colors.accent_dark)
+    ui.pixel_icon(UPDATE_ICONS[2], content_x, y + 18, available and colors.accent or colors.red)
+    ui.text(ui.fit(title, f.subtitle, content_w - 34), content_x + 34, y + 18, f.subtitle, colors.text)
+
+    local detail_y = y + math.max(49, f.subtitle:getHeight() + 23)
+    if available then
+        ui.text("v" .. self.version .. "  →  v" .. self.latest, content_x, detail_y, f.small, colors.accent)
+        detail_y = detail_y + f.small:getHeight() + 9
+    end
+    local has_error = self.status_tone == "error"
+    local detail = (not available or has_error or self.cancelled) and self.status
+        or "Update now? SPgram will download the update and restart."
+    local _, lines = f.small:getWrap(detail, content_w)
+    ui.printf(detail, content_x, detail_y, content_w, "left", f.small, has_error and colors.red or colors.muted)
+    local button_h = ui.settings_row_height(f.normal)
+    local button_y = y + height - button_h - f.tiny:getHeight() - 24
+    local notes_y = detail_y + #lines * f.small:getHeight() + 18
+    if available and notes_y + f.small:getHeight() + 12 < button_y then
+        ui.rect(content_x, notes_y - 7, content_w, 1, colors.accent_dark)
+        if self.notes and self.notes:find("%S") then
+            self:draw_notes(content_x, notes_y, content_w, button_y - notes_y - 9)
+        else
+            ui.text("Release notes are unavailable.", content_x, notes_y, f.small, colors.muted)
+        end
+    end
+
+    local labels = available and {"Not now", "Update now"} or {"Continue"}
+    local gap = 10
+    local button_w = math.floor((content_w - (#labels - 1) * gap) / #labels)
+    self.launch_buttons = {}
+    for index, label in ipairs(labels) do
+        local button_x = content_x + (index - 1) * (button_w + gap)
+        local selected = index == self.launch_selection
+        local fill = selected and colors.accent or colors.panel_alt
+        local ink = selected and ui.contrasting_text(fill) or colors.text
+        ui.retro_panel(button_x, button_y, button_w, button_h, fill, colors.accent_dark)
+        if selected then ui.focus_corners(button_x, button_y, button_w, button_h, colors.accent) end
+        ui.printf(label, button_x + 4, button_y + (button_h - f.normal:getHeight()) / 2,
+            button_w - 8, "center", f.normal, ink)
+        self.launch_buttons[index] = {x = button_x, y = button_y, w = button_w, h = button_h}
+    end
+    local hint = available and "←/→ — Choose   {confirm} — Select   {back} — Not now" or "{confirm} — Continue"
+    ui.button_hint(hint, content_x, button_y + button_h + 7, f.tiny, colors.muted, content_w)
 end
 
 function Release:draw()

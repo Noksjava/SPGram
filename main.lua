@@ -401,6 +401,7 @@ function love.load()
     end
 
     releases = release_screen.new(fonts, startup_marker)
+    local wallpaper_preview = setmetatable({}, {__index = messenger_screen})
     screens = {
         auth = auth_screen.new(fonts, tg, {
             open_face_setup = open_face_setup,
@@ -414,6 +415,10 @@ function love.load()
         profile = profile_screen.new(fonts, tg),
         settings = settings_screen.new(fonts, tg, {
             releases = releases,
+            draw_wallpaper_preview = function(x, y, width, height)
+                wallpaper_preview:draw_chat_background(x, y, width, height, love.timer.getTime(), true)
+            end,
+            release_wallpaper_preview = function() wallpaper_preview:release_chat_background() end,
             accounts = function() return account_store.accounts, account_store.active_key end,
             switch_account = function(key) pending_account_key = key end,
             add_account = function() pending_account_key = next_account_key() end,
@@ -632,10 +637,12 @@ local function update_app(dt)
         repeat_timer = repeat_timer - dt
         if repeat_timer <= 0 then
             repeat_timer = REPEAT_RATE
+            ui.navigation_repeating = true
             handle_key(held_dir, true)
         end
     else
         repeat_timer = REPEAT_DELAY
+        ui.navigation_repeating = false
     end
 
     performance.limit_frame()
@@ -670,8 +677,7 @@ function love.update(dt)
                 and not tg.qr_link and not tg.qr_request_pending and not tg.auth_input_pending
                 and not current:keyboard_mode()
             if chat_list or sign_in then
-                releases.launch_offer = false
-                releases.selection = releases.available and 2 or 1
+                releases:open_launch_prompt()
                 launch_releases_open = true
             end
         end
@@ -692,7 +698,7 @@ function love.draw()
         return
     end
     if launch_releases_open then
-        releases:draw()
+        releases:draw_launch_prompt()
     elseif settings_slide and current == screens.settings then
         local progress = settings_slide_progress()
         local width, height = ui.width(), ui.height()
@@ -735,7 +741,7 @@ handle_key = function(key, from_gamepad)
         return
     end
     if launch_releases_open then
-        if releases:keypressed(key) == "back" then launch_releases_open = false end
+        if releases:launch_keypressed(key) == "back" then launch_releases_open = false end
         return
     end
     if settings_slide and settings_slide.finish == 0 and current == screens.settings then return end
@@ -790,10 +796,6 @@ handle_key = function(key, from_gamepad)
     if current == screens.controls then
         if key == "return" or key == "kpenter" then open_face_setup(); return end
         if key == "escape" then close_controls(); return end
-    end
-    if key == "home" or key == "m" then
-        if love.window and love.window.minimize then love.window.minimize() end
-        return
     end
     if key == "escape" and current == screens.auth then
         if tg.setup_error or (sign_in_only and tg.ready) or current:keyboard_mode() then
@@ -973,7 +975,10 @@ end
 
 function love.mousepressed(x, y, button)
     if releases and releases:operation_active() then return end
-    if launch_releases_open then return end
+    if launch_releases_open then
+        if releases:launch_mousepressed(x, y, button) == "back" then launch_releases_open = false end
+        return
+    end
     if startup_intro then return end
     if settings_slide and current == screens.settings then return end
     if current.mousepressed then current:mousepressed(x, y, button) end

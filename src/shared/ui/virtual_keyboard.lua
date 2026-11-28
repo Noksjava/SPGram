@@ -99,19 +99,21 @@ local CONTROLS = {
     {label = "Caps", action = "caps", width = 44},
     {label = "?123", action = "symbols", width = 49},
     {action = "lang", width = 32},
-    {label = "😀", action = "emoji", width = 37},
-    {action = "stickers", width = 37},
+    {action = "emoji", width = 37},
+    {label = "Space", action = "space", width = 210},
     {label = "Files", action = "files", width = 43},
-    {label = "←", action = "cursor_left", width = 32},
-    {label = "Space", action = "space", width = 79},
-    {label = "→", action = "cursor_right", width = 32},
-    {label = "⌫", action = "backspace", width = 38},
     {label = "Enter", action = "enter", width = 92},
+}
+
+local EDIT_CONTROLS = {
+    {action = "cursor_left", width = 32},
+    {action = "cursor_right", width = 32},
+    {label = "Backspace", action = "backspace", width = 104},
 }
 
 local TEXT_CONTROLS = {}
 for _, control in ipairs(CONTROLS) do
-    if control.action ~= "stickers" and control.action ~= "files" then
+    if control.action ~= "files" then
         TEXT_CONTROLS[#TEXT_CONTROLS + 1] = control
     end
 end
@@ -120,7 +122,8 @@ local PAD = 8
 local KEY_W = 44
 local KEY_H = 38
 local KEY_GAP = 4
-local ROW_H = KEY_H + KEY_GAP
+local EDIT_HEIGHT = 28
+local EMOJI_ICON = {"0111110", "1000001", "1010101", "1000001", "1010101", "1001001", "0111110"}
 
 local function upper_key(key)
     return extra_upper[key] or string.upper(key)
@@ -175,12 +178,13 @@ function keyboard:_row_count()
 end
 
 function keyboard:_col_count(row)
+    if row == 0 then return #EDIT_CONTROLS end
     if row <= #self.layout then return #self.layout[row] end
     return #self.controls
 end
 
 function keyboard:_clamp_cursor()
-    self.row = math.max(1, math.min(self:_row_count(), self.row or 1))
+    self.row = math.max(0, math.min(self:_row_count(), self.row or 1))
     self.col = math.max(1, math.min(self:_col_count(self.row), self.col or 1))
 end
 
@@ -238,10 +242,18 @@ end
 
 function keyboard:navigate(dx, dy)
     if dy ~= 0 then
+        local previous_row, previous_count = self.row, self:_col_count(self.row)
         self.row = self.row + dy
-        if self.row < 1 then self.row = self:_row_count() end
-        if self.row > self:_row_count() then self.row = 1 end
-        self.col = math.min(self.col, self:_col_count(self.row))
+        if self.row < 0 then self.row = self:_row_count() end
+        if self.row > self:_row_count() then self.row = 0 end
+        local count = self:_col_count(self.row)
+        if self.row == 0 then
+            if self.col > 2 then self.col = self.col > previous_count / 2 and 3 or 2 end
+        elseif previous_row == 0 and self.col == 3 then
+            self.col = count
+        else
+            self.col = math.min(self.col, count)
+        end
     end
     if dx ~= 0 then
         local count = self:_col_count(self.row)
@@ -253,7 +265,10 @@ function keyboard:navigate(dx, dy)
 end
 
 function keyboard:activate()
-    if self.row <= #self.layout then
+    if love.timer then
+        self.key_press = {row = self.row, col = self.col, at = love.timer.getTime(), layout = self.layout}
+    end
+    if self.row > 0 and self.row <= #self.layout then
         local key = self.layout[self.row][self.col]
         if not key or key == "" then return nil end
         if self.mode == "text" and self.lang == "zh" then
@@ -272,7 +287,7 @@ function keyboard:activate()
         return {kind = "text", text = text}
     end
 
-    local control = self.controls[self.col]
+    local control = (self.row == 0 and EDIT_CONTROLS or self.controls)[self.col]
     if not control then return nil end
     if control.action == "shift" then
         self.shift = not self.shift
@@ -300,8 +315,6 @@ function keyboard:activate()
     elseif control.action == "hide" then
         self.visible = false
         return {kind = "hide"}
-    elseif control.action == "stickers" then
-        return {kind = "stickers"}
     elseif control.action == "files" then
         return {kind = "files"}
     end
@@ -431,6 +444,57 @@ function keyboard:draw_language_menu()
     ui.button_hint("{confirm} — Select   {back} — Cancel", x + 9, y + height - 22, f.tiny, colors.muted, width - 18)
 end
 
+function keyboard:draw_control_row(controls, row, x, y, available, height, small, tiny, colors, press, inset)
+    local total_w = (#controls - 1) * KEY_GAP
+    for _, control in ipairs(controls) do total_w = total_w + control.width end
+    local scale = math.min(1, available / total_w)
+    local key_x = row == 0 and x or x + math.floor((available - total_w * scale) / 2)
+    local can_switch = row ~= 0 and #languages.enabled_options() > 1
+    if self.enter_theme ~= colors then
+        self.enter_theme = colors
+        self.enter_color = {}
+        for i = 1, 3 do self.enter_color[i] = 0.58 * colors.accent[i] + 0.42 * colors.panel[i] end
+    end
+    for col, control in ipairs(controls) do
+        local action = control.action
+        local width = math.floor(control.width * scale)
+        if row == 0 and action == "backspace" then key_x = x + available - width end
+        local selected = self.row == row and self.col == col
+        local pressed = inset > 0 and press.row == row and press.col == col and inset or 0
+        local active = (action == "shift" and self.shift) or (action == "caps" and self.caps)
+            or (action == "emoji" and self.mode == "emoji")
+        local disabled = action == "lang" and not can_switch
+        local bg = disabled and colors.panel_alt or (selected and colors.accent_dark or (active and colors.accent or colors.bg))
+        local outline = selected and not disabled and colors.accent or colors.muted
+        local enter = action == "enter"
+        if enter then
+            bg = selected and colors.accent or self.enter_color
+            outline = selected and ui.contrasting_text(bg) or colors.accent
+        end
+        ui.rect(key_x + pressed, y + pressed, width - 2 * pressed, height - pressed, bg, 4)
+        ui.outline(key_x + pressed, y + pressed, width - 2 * pressed, height - pressed, outline, 4)
+        local cx, cy = key_x + width / 2, y + height / 2 + math.floor(pressed / 2)
+        local ink = (enter or (active and not selected)) and ui.contrasting_text(bg) or colors.text
+        if action == "lang" then
+            draw_globe(cx, cy, disabled and colors.muted or colors.text, disabled and 0.42 or 1)
+        elseif action == "emoji" then
+            ui.pixel_icon(EMOJI_ICON, math.floor(cx - 7), math.floor(cy - 7), ink, 2)
+        elseif action == "cursor_left" or action == "cursor_right" then
+            local side = action == "cursor_left" and -1 or 1
+            ui.set_color(ink)
+            love.graphics.line(cx - 6, cy, cx + 6, cy)
+            love.graphics.line(cx, cy - 5, cx + side * 6, cy, cx, cy + 5)
+            ui.set_color(colors.white)
+        else
+            local font = enter and small or tiny
+            local label = action == "symbols" and self.mode == "symbols" and "ABC" or control.label
+            label = ui.fit(label, font, width - 4)
+            ui.text(label, key_x + math.floor((width - font:getWidth(label)) / 2), math.floor(cy - font:getHeight() / 2), font, ink)
+        end
+        key_x = key_x + width + KEY_GAP * scale
+    end
+end
+
 function keyboard:draw(preview, placeholder)
     if not self.visible then return end
 
@@ -444,7 +508,12 @@ function keyboard:draw(preview, placeholder)
     local badge_h = tiny:getHeight() + 10
     local draft_line = small:getHeight() + 3
     local draft_h = draft_line * 2 + 10
-    local kb_h = badge_h + draft_h + PAD + #self.layout * ROW_H + ROW_H + 22
+    local footer_h = math.max(22, tiny:getHeight() + 6)
+    local fixed_height = badge_h + draft_h + PAD + EDIT_HEIGHT + KEY_GAP + footer_h
+    local rows = #self.layout + 1
+    local key_h = math.max(18, math.min(KEY_H, math.floor((ui.height() - fixed_height - 6) / rows) - KEY_GAP))
+    local row_h = key_h + KEY_GAP
+    local kb_h = fixed_height + rows * row_h
     local x = math.floor((ui.width() - KB_W) / 2)
     local y = ui.height() - kb_h - 6
 
@@ -506,77 +575,33 @@ function keyboard:draw(preview, placeholder)
     end
 
     local key_y = draft_y + draft_h + PAD
+    local press = self.key_press
+    local inset = press and press.layout == self.layout and ui.press_inset(love.timer.getTime() - press.at) or 0
+    self:draw_control_row(EDIT_CONTROLS, 0, x + PAD, key_y, KB_W - PAD * 2, EDIT_HEIGHT, small, tiny, colors, press, inset)
+    key_y = key_y + EDIT_HEIGHT + KEY_GAP
     for row_idx, row in ipairs(self.layout) do
         local kwidth = math.min(KEY_W, math.floor((KB_W - PAD * 2 - (#row - 1) * KEY_GAP) / #row))
         local row_w = #row * kwidth + (#row - 1) * KEY_GAP
         local key_x = x + math.floor((KB_W - row_w) / 2)
         for col_idx, key in ipairs(row) do
             local selected = self.row == row_idx and self.col == col_idx
+            local press_inset = inset > 0 and press.row == row_idx and press.col == col_idx and inset or 0
             local bg = selected and colors.accent_dark or colors.bg
             local outline = selected and colors.accent or colors.muted
-            ui.rect(key_x, key_y, kwidth, KEY_H, bg, 4)
-            ui.outline(key_x, key_y, kwidth, KEY_H, outline, 4)
+            ui.rect(key_x + press_inset, key_y + press_inset, kwidth - 2 * press_inset, key_h - press_inset, bg, 4)
+            ui.outline(key_x + press_inset, key_y + press_inset, kwidth - 2 * press_inset, key_h - press_inset, outline, 4)
             local label = key
             if self.mode == "text" and self.shift ~= self.caps then label = upper_key(key) end
             ui.text(label, key_x + math.floor((kwidth - f:getWidth(label)) / 2),
-                key_y + math.floor((KEY_H - f:getHeight()) / 2), f, colors.text)
+                key_y + math.floor((key_h - f:getHeight()) / 2) + press_inset, f, colors.text)
             key_x = key_x + kwidth + KEY_GAP
         end
-        key_y = key_y + ROW_H
+        key_y = key_y + row_h
     end
 
-    local total_w = 0
-    for i, control in ipairs(self.controls) do
-        total_w = total_w + control.width
-        if i > 1 then total_w = total_w + KEY_GAP end
-    end
-    local scale = math.min(1, (KB_W - PAD * 2) / total_w)
-    local key_x = x + math.floor((KB_W - total_w * scale) / 2)
-    local can_switch = #languages.enabled_options() > 1
-    if self.enter_theme ~= colors then
-        self.enter_theme = colors
-        self.enter_color = {}
-        for i = 1, 3 do self.enter_color[i] = 0.58 * colors.accent[i] + 0.42 * colors.panel[i] end
-    end
-    for col_idx, control in ipairs(self.controls) do
-        local width = math.floor(control.width * scale)
-        local selected = self.row == #self.layout + 1 and self.col == col_idx
-        local active = (control.action == "shift" and self.shift)
-            or (control.action == "caps" and self.caps)
-        local disabled = control.action == "lang" and not can_switch
-        local bg = disabled and colors.panel_alt or (selected and colors.accent_dark or (active and colors.accent or colors.bg))
-        local outline = selected and not disabled and colors.accent or colors.muted
-        local enter = control.action == "enter"
-        if enter then
-            bg = selected and colors.accent or self.enter_color
-            outline = selected and ui.contrasting_text(bg) or colors.accent
-        end
-        ui.rect(key_x, key_y, width, KEY_H, bg, 4)
-        ui.outline(key_x, key_y, width, KEY_H, outline, 4)
-        if control.action == "lang" then
-            draw_globe(key_x + width / 2, key_y + KEY_H / 2, disabled and colors.muted or colors.text,
-                disabled and 0.42 or 1)
-        elseif control.action == "stickers" then
-            ui.media_picker_icon(key_x + width / 2, key_y + KEY_H / 2, colors.text)
-        elseif control.action == "cursor_left" or control.action == "cursor_right" then
-            local cx, cy = key_x + width / 2, key_y + KEY_H / 2
-            local direction = control.action == "cursor_left" and -1 or 1
-            ui.set_color(colors.text)
-            love.graphics.line(cx - 6, cy, cx + 6, cy)
-            love.graphics.line(cx, cy - 5, cx + direction * 6, cy, cx, cy + 5)
-            ui.set_color(colors.white)
-        else
-            local font = enter and small or tiny
-            local label = control.action == "symbols" and self.mode == "symbols" and "ABC" or control.label
-            label = ui.fit(label, font, width - 4)
-            local ink = enter and ui.contrasting_text(bg) or active and colors.bg or colors.text
-            ui.text(label, key_x + math.floor((width - font:getWidth(label)) / 2),
-                key_y + math.floor((KEY_H - font:getHeight()) / 2), font, ink)
-        end
-        key_x = key_x + width + KEY_GAP * scale
-    end
+    self:draw_control_row(self.controls, self:_row_count(), x + PAD, key_y, KB_W - PAD * 2, key_h, small, tiny, colors, press, inset)
     ui.button_hint("{search} — Backspace   L1/R1 — Move cursor   {back} — Close",
-        x + PAD, y + kb_h - 18, tiny, colors.muted, KB_W - PAD * 2)
+        x + PAD, y + kb_h - footer_h + 3, tiny, colors.muted, KB_W - PAD * 2)
     self:draw_language_menu()
 end
 
